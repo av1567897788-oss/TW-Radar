@@ -967,7 +967,12 @@ with rec_col:
     # 快取（每日更新一次）
     if "rec_stocks" not in st.session_state:
         with st.spinner("掃描25支股票中（需30-60秒）..."):
-            st.session_state["rec_stocks"] = get_recommended_stocks(top_n=8)
+            atk = st.session_state.get("atk_cache") or detect_attacks()
+            st.session_state["atk_cache"] = atk
+            st.session_state["rec_stocks"] = get_recommended_stocks(
+                top_n=8, attack_data=atk,
+                news_list=st.session_state.get("news_data", [])
+            )
 
     rec_stocks = st.session_state.get("rec_stocks", [])
     if not rec_stocks:
@@ -993,7 +998,7 @@ with rec_col:
                     </div>
                 </div>
                 <div style='color:#888; font-size:0.75rem; margin-top:4px;'>
-                    技術{stock["tech_score"]}/20 · 籌碼{stock["chip_score"]}/20 · RSI {stock.get("rsi","?"):.0f}
+                    技術{stock["tech_score"]} 籌碼{stock["chip_score"]} 基本{stock.get("fund_score",0)} 產業{stock.get("sect_score",0)} 先知{stock.get("proph_score",0)} ｜ RSI {stock.get("rsi",0):.0f}
                 </div>
                 <div style='color:#00D4AA; font-size:0.75rem;'>{reasons_txt}</div>
             </div>
@@ -1016,7 +1021,11 @@ with warn_col:
 
     if "warn_stocks" not in st.session_state:
         with st.spinner("掃描風險中..."):
-            st.session_state["warn_stocks"] = get_warning_stocks(holdings)
+            atk_w = st.session_state.get("atk_cache") or detect_attacks()
+            st.session_state["warn_stocks"] = get_warning_stocks(
+                holdings, attack_data=atk_w,
+                news_list=st.session_state.get("news_data", [])
+            )
 
     warn_stocks = st.session_state.get("warn_stocks", [])
     if not warn_stocks:

@@ -73,9 +73,6 @@ def init_bt_db():
                 result TEXT
             )
         """)
-        conn.executemany(
-            "DELETE FROM bt_trades WHERE 1=1"
-        )  # 清空舊資料
         conn.execute("DELETE FROM bt_trades")
         conn.execute("DELETE FROM bt_daily")
         conn.execute("DELETE FROM bt_predictions")
