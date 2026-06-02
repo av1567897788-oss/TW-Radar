@@ -954,10 +954,12 @@ with rec_col:
     st.markdown("## 📈 推薦股清單")
     st.markdown("""
     <div style='font-size:0.75rem; margin-bottom:8px; line-height:1.8;'>
-        <span style='color:#FF3333; font-weight:bold;'>■ 紅色（≥30分）= 強烈推薦（多頭強勢）</span> &nbsp;
-        <span style='color:#FFD700;'>■ 黃色（20-29分）= 值得關注（觀察進場）</span> &nbsp;
-        <span style='color:#FF8C00;'>■ 橘色（&lt;20分）= 參考觀察（訊號弱）</span><br/>
-        <span style='color:#888;'>台股慣例：紅漲綠跌｜滿分40分（技術+籌碼）｜每日14:10更新｜非投資建議</span>
+        📊 <b>排序邏輯</b>：從監控清單掃描所有股票，依五層總分由高到低排列，顯示前15名。<br/>
+        <b>這就是當日最值得關注的股票順序</b>，#1最高分、越前面越優先考慮。<br/>
+        <span style='color:#FF3333; font-weight:bold;'>■ 紅色（≥70分）= 強烈推薦</span> &nbsp;
+        <span style='color:#FFD700;'>■ 黃色（50-69分）= 值得關注</span> &nbsp;
+        <span style='color:#FF8C00;'>■ 橘色（&lt;50分）= 參考觀察</span><br/>
+        <span style='color:#888;'>台股慣例：紅漲綠跌｜滿分100分（五層各20）｜每日14:10更新｜非投資建議</span>
     </div>""", unsafe_allow_html=True)
 
     if st.button("🔄 更新推薦股", key="refresh_rec"):
@@ -970,7 +972,7 @@ with rec_col:
             atk = st.session_state.get("atk_cache") or detect_attacks()
             st.session_state["atk_cache"] = atk
             st.session_state["rec_stocks"] = get_recommended_stocks(
-                top_n=8, attack_data=atk,
+                top_n=15, attack_data=atk,
                 news_list=st.session_state.get("news_data", [])
             )
 
@@ -980,8 +982,8 @@ with rec_col:
     else:
         for stock in rec_stocks:
             score = stock["total_score"]
-            # 台股慣例：紅=強烈推薦（漲），黃=關注，橘=參考
-            score_color = "#FF3333" if score >= 30 else "#FFD700" if score >= 20 else "#FF8C00"
+            # 台股慣例：紅=強烈推薦（漲），黃=關注，橘=參考（分母100分）
+            score_color = "#FF3333" if score >= 70 else "#FFD700" if score >= 50 else "#FF8C00"
             reasons_txt = " · ".join(stock.get("reasons", []))
             st.markdown(f"""
             <div style='background:#1A1D27; border-radius:8px; padding:10px 12px; margin-bottom:6px;
@@ -993,7 +995,7 @@ with rec_col:
                         <span style='color:#888; font-size:0.78rem;'> · NT${stock["current_price"]:.0f}</span>
                     </div>
                     <div style='text-align:right;'>
-                        <span style='color:{score_color}; font-weight:bold; font-size:1rem;'>{score}/40</span>
+                        <span style='color:{score_color}; font-weight:bold; font-size:1rem;'>{score}/100</span>
                         <span style='color:#888; font-size:0.72rem;'>分</span>
                     </div>
                 </div>
@@ -1009,10 +1011,12 @@ with warn_col:
     st.markdown("## ⚠️ 堪憂股清單")
     st.markdown("""
     <div style='font-size:0.75rem; margin-bottom:8px; line-height:1.8;'>
-        <span style='color:#22C55E; font-weight:bold;'>■ 綠色 = 停損警告（持股跌逾-8%，應立即賣出）</span><br/>
-        <span style='color:#A855F7;'>■ 紫色 = 轉弱，考慮減碼（技術/籌碼惡化）</span><br/>
-        <span style='color:#FFD700;'>■ 黃色 = 出現風險訊號（尚未持有，避免進場）</span><br/>
-        <span style='color:#888;'>台股慣例：紅漲綠跌｜持股優先顯示｜非投資建議</span>
+        📊 <b>顯示邏輯</b>：持股有風險 優先顯示；監控清單出現技術崩壞/外資大賣 次之。<br/>
+        <b>目前無警示 = 台股多頭行情中，尚無明顯危險訊號</b>（空頭來臨時會自動跳出）。<br/>
+        <span style='color:#22C55E; font-weight:bold;'>■ 綠色 = 持股停損警告（跌逾-8%，應立即賣出）</span><br/>
+        <span style='color:#A855F7;'>■ 紫色 = 持股轉弱，考慮減碼</span>
+        <span style='color:#FFD700;'>■ 黃色 = 監控清單風險訊號，尚未持有勿進場</span><br/>
+        <span style='color:#888;'>台股慣例：紅漲綠跌｜持股優先｜非投資建議</span>
     </div>""", unsafe_allow_html=True)
 
     if st.button("🔄 更新堪憂股", key="refresh_warn"):
