@@ -224,7 +224,7 @@ def setup_schedule():
     # 技術評分：每日 14:10（收盤後）
     schedule.every().day.at("14:10").do(job_daily_technical)
 
-    # 虛擬投資客模擬：每日 20:00（晚間結算，FinMind資料已確保完整）
+    # 虛擬投資客模擬：每日 14:20（收盤後結算）
     def job_virtual_sim():
         log("🤖 執行虛擬投資客模擬...")
         try:
@@ -233,7 +233,7 @@ def setup_schedule():
             run_daily_simulation()
         except Exception as e:
             log(f"  模擬失敗：{e}")
-    schedule.every().day.at("20:00").do(job_virtual_sim)
+    schedule.every().day.at("14:20").do(job_virtual_sim)
 
     # 先知分析：每日 9:00 & 20:00
     schedule.every().day.at("09:00").do(job_prophet)
