@@ -221,10 +221,10 @@ def setup_schedule():
     # 盤中監控：每10分鐘
     schedule.every(10).minutes.do(job_monitor_holdings)
 
-    # 技術評分：每日 14:10（收盤後）
-    schedule.every().day.at("14:10").do(job_daily_technical)
+    # 技術評分：每日 19:50（晚間，外網環境）
+    schedule.every().day.at("19:50").do(job_daily_technical)
 
-    # 虛擬投資客模擬：每日 14:20（收盤後結算）
+    # 虛擬投資客模擬：每日 20:00（晚間，外網環境）
     def job_virtual_sim():
         log("🤖 執行虛擬投資客模擬...")
         try:
@@ -233,7 +233,7 @@ def setup_schedule():
             run_daily_simulation()
         except Exception as e:
             log(f"  模擬失敗：{e}")
-    schedule.every().day.at("14:20").do(job_virtual_sim)
+    schedule.every().day.at("20:00").do(job_virtual_sim)
 
     # 先知分析：每日 9:00 & 20:00
     schedule.every().day.at("09:00").do(job_prophet)
@@ -245,7 +245,7 @@ def setup_schedule():
     log("✅ 排程設定完成：")
     log("   新聞 → 每30分鐘")
     log("   持股監控 → 每10分鐘（盤中）")
-    log("   技術評分 → 每日 14:10")
+    log("   技術評分 → 每日 19:50")
     log("   先知分析 → 每日 9:00 & 20:00")
     log("   晨間提醒 → 每日 8:30")
 

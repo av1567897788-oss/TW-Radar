@@ -53,10 +53,10 @@ for i, (inv_id, inv) in enumerate(INVESTORS.items()):
     holdings = get_sim_holdings(inv_id)
 
     # 市值估算（用買入價代替，實際需現價）
-    market_val = float(holdings["buy_price"].astype(float).values *
-                       holdings["shares"].astype(float).values).sum() if not holdings.empty else 0
     if not holdings.empty:
         market_val = (holdings["buy_price"].astype(float) * holdings["shares"].astype(float)).sum()
+    else:
+        market_val = 0
 
     total_assets = float(cap.get("cash", 0)) + market_val
     orig = inv["capital"]
@@ -69,7 +69,7 @@ for i, (inv_id, inv) in enumerate(INVESTORS.items()):
     }
 
     with cols[i]:
-        color = "#FF3333" if pnl >= 0 else "#22C55E"
+        color = "#22C55E" if pnl >= 0 else "#FF3333"
         st.markdown(f"""
         <div style='background:#1A1D27; border-radius:10px; padding:14px;
                     border-left:4px solid {color};'>
