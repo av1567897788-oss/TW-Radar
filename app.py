@@ -1071,6 +1071,131 @@ with warn_col:
                 st.markdown("<div style='margin-bottom:6px;'></div>", unsafe_allow_html=True)
 
 # ╔══════════════════════════════════════════════════════╗
+# ║  每日重點（全寬）                                      ║
+# ╚══════════════════════════════════════════════════════╝
+st.divider()
+st.markdown("## 💡 每日操作重點")
+st.markdown("""
+<div style='background:#0D1117; border:1px solid #2A2D3A; border-radius:10px; padding:14px 18px; margin-bottom:12px;'>
+<span style='color:#888; font-size:0.78rem;'>
+系統依五層100分評分 + 籌碼異常偵測，自動整理今日最值得行動的結論。<br/>
+<b>評分≥70 → 強烈推薦。評分50-69 → 觀察等待。持股觸停損-8% → 立即賣出。</b><br/>
+所有建議均基於真實數據，非幻想捏造。最終買賣決策由您做主。
+</span>
+</div>
+""", unsafe_allow_html=True)
+
+_daily_rec = st.session_state.get("rec_stocks", [])
+_daily_warn = st.session_state.get("warn_stocks", [])
+
+# 取出強烈推薦（≥70分）最多3支
+_buy_list = [s for s in _daily_rec if s["total_score"] >= 70][:3]
+# 取出70以下但≥55，作為觀察候選
+_watch_list = [s for s in _daily_rec if 55 <= s["total_score"] < 70][:2]
+# 持股停損警告（urgency≥8）
+_sell_list = [s for s in _daily_warn if s.get("is_holding") and s.get("urgency", 0) >= 8]
+
+daily_c1, daily_c2 = st.columns([1, 1])
+
+with daily_c1:
+    # ── 今日建議買入 ─────────────────────────────────────
+    if _buy_list:
+        st.markdown("### 📌 今日建議買入")
+        for s in _buy_list:
+            reasons_txt = "、".join(s.get("reasons", [])[:2]) or "五層評分均佳"
+            st.markdown(f"""
+            <div style='background:#0A1F0A; border:1px solid #22C55E; border-radius:8px;
+                        padding:12px 14px; margin-bottom:8px;'>
+                <div style='display:flex; justify-content:space-between; align-items:center;'>
+                    <div>
+                        <span style='color:#22C55E; font-weight:bold; font-size:1.05rem;'>
+                            #{s["rank"]} {s["stock_id"]} {s["stock_name"]}
+                        </span>
+                        <span style='color:#888; font-size:0.8rem;'> · NT${s["current_price"]:.0f}</span>
+                    </div>
+                    <span style='color:#22C55E; font-weight:bold; font-size:1.1rem;'>{s["total_score"]}/100</span>
+                </div>
+                <div style='color:#22C55E; font-size:0.82rem; margin-top:6px; font-weight:bold;'>
+                    ✅ 建議理由：{reasons_txt}
+                </div>
+                <div style='color:#888; font-size:0.75rem; margin-top:4px;'>
+                    技術{s["tech_score"]} 籌碼{s["chip_score"]} 基本{s.get("fund_score",0)}
+                    產業{s.get("sect_score",0)} 先知{s.get("proph_score",0)}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.markdown("### 📌 今日建議買入")
+        st.markdown("""
+        <div style='background:#1A1D27; border:1px solid #2A2D3A; border-radius:8px;
+                    padding:12px 14px; color:#888; font-size:0.88rem;'>
+            ⏸ 今日無強烈推薦（評分均未達70分）<br/>
+            <span style='font-size:0.78rem;'>台股整體動能不足，建議觀察等待更佳進場時機。</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    if _watch_list:
+        st.markdown("##### 👁 可繼續觀察（評分55-69）")
+        for s in _watch_list:
+            st.markdown(f"""
+            <div style='background:#1A1D27; border-left:3px solid #FFD700; border-radius:6px;
+                        padding:8px 12px; margin-bottom:6px; font-size:0.85rem;'>
+                <span style='color:#FFD700; font-weight:bold;'>{s["stock_id"]} {s["stock_name"]}</span>
+                <span style='color:#888;'> · {s["total_score"]}/100 · NT${s["current_price"]:.0f}</span><br/>
+                <span style='color:#888; font-size:0.75rem;'>{'、'.join(s.get("reasons", [])[:2]) or "評分中等，持續觀察"}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+with daily_c2:
+    # ── 今日建議賣出 ─────────────────────────────────────
+    st.markdown("### 🚨 今日建議賣出")
+    if _sell_list:
+        for s in _sell_list:
+            pnl_pct = s.get("pnl_pct") or 0
+            reasons_txt = "、".join(s.get("risk_reasons", [])[:2]) or "觸及停損線"
+            st.markdown(f"""
+            <div style='background:#1F0A0A; border:1px solid #FF3333; border-radius:8px;
+                        padding:12px 14px; margin-bottom:8px;'>
+                <div style='display:flex; justify-content:space-between; align-items:center;'>
+                    <div>
+                        <span style='color:#FF3333; font-weight:bold; font-size:1.05rem;'>
+                            {s["stock_id"]} {s["stock_name"]}
+                        </span>
+                        <span style='color:#888; font-size:0.8rem;'> · NT${s["current_price"]:.0f}</span>
+                    </div>
+                    <span style='color:#FF3333; font-weight:bold; font-size:1.1rem;'>{pnl_pct:+.1f}%</span>
+                </div>
+                <div style='color:#FF3333; font-size:0.82rem; margin-top:6px; font-weight:bold;'>
+                    ❌ 建議賣出：{reasons_txt}
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+        <div style='background:#0A1F0A; border:1px solid #22C55E; border-radius:8px;
+                    padding:12px 14px; color:#22C55E; font-size:0.88rem;'>
+            ✅ 今日持股無需賣出<br/>
+            <span style='color:#888; font-size:0.78rem;'>
+            所有持股均未觸及停損（-8%）。繼續持有，等待獲利訊號。
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:12px;'></div>", unsafe_allow_html=True)
+    st.markdown("""
+    <div style='background:#1A1D27; border-radius:8px; padding:10px 14px; font-size:0.75rem; color:#555;'>
+    📋 <b>操作流程提醒</b><br/>
+    1. 建議買入 → 確認自己資金夠 → 不超過單筆15%倉位<br/>
+    2. 建議賣出 → 停損優先，不猶豫<br/>
+    3. 觀察等待 → 不追高、不搶進，等評分升至70再考慮<br/>
+    4. 每日20:00自動更新，明早看最新建議
+    </div>
+    """, unsafe_allow_html=True)
+
+if not _daily_rec:
+    st.info("📌 推薦股清單尚未載入，請先點上方「更新推薦股」，再重新整理頁面即可看到今日重點。")
+
+# ╔══════════════════════════════════════════════════════╗
 # ║  即時新聞牆（全寬）                                    ║
 # ╚══════════════════════════════════════════════════════╝
 st.divider()
