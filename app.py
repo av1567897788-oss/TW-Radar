@@ -208,7 +208,7 @@ with col_market:
     twii_pct = twii_data.get("change_pct", 0) or 0
 
     if twii_price:
-        color = "#00D4AA" if twii_change >= 0 else "#FF4B4B"
+        color = "#FF4B4B" if twii_change >= 0 else "#22C55E"  # 台股慣例：漲紅跌綠
         arrow = "▲" if twii_change >= 0 else "▼"
         st.markdown(f"""
         <div class='metric-card'>
@@ -233,8 +233,8 @@ with col_market:
                 low=twii_df["min"].astype(float),
                 close=twii_df["close"].astype(float),
                 name="2330",
-                increasing_line_color="#00D4AA",
-                decreasing_line_color="#FF4B4B"
+                increasing_line_color="#FF4B4B",   # 台股慣例：漲=紅
+                decreasing_line_color="#22C55E"    # 台股慣例：跌=綠
             ))
         else:
             fig.add_trace(go.Scatter(
@@ -275,7 +275,7 @@ with col_market:
 
             chg = cur - buy_price
             chg_pct = chg / buy_price * 100 if buy_price else 0
-            color = "#00D4AA" if chg >= 0 else "#FF4B4B"
+            color = "#FF4B4B" if chg >= 0 else "#22C55E"  # 台股慣例：漲紅跌綠
             arrow = "▲" if chg >= 0 else "▼"
 
             st.markdown(f"""
@@ -515,7 +515,7 @@ with col_portfolio:
             else:
                 status, status_label, card_cls = "🟢", "正常持有", ""
 
-            pnl_color = "#00D4AA" if pnl >= 0 else "#FF4B4B"
+            pnl_color = "#FF4B4B" if pnl >= 0 else "#22C55E"  # 台股慣例：獲利紅、虧損綠
 
             st.markdown(f"""
             <div class='metric-card {card_cls}'>
@@ -566,7 +566,7 @@ with col_portfolio:
                     from utils.database import _to_shares
                     sell_s = _to_shares(sell_qty, sell_unit)
                     est_pnl = (sell_price - buy_price) * sell_s
-                    est_color = "#00D4AA" if est_pnl >= 0 else "#FF4B4B"
+                    est_color = "#FF4B4B" if est_pnl >= 0 else "#22C55E"  # 台股慣例
                     st.markdown(f"預估損益：<span style='color:{est_color}; font-weight:bold;'>NT$ {est_pnl:+,.0f}</span>　回收現金：NT$ {sell_price*sell_s:,.0f}",
                                 unsafe_allow_html=True)
 
@@ -747,15 +747,15 @@ with col_capital:
         ("持股成本", f"NT$ {total_cost:,.0f}", "#FAFAFA"),
         ("持股市值", f"NT$ {total_market_value:,.0f}", "#FAFAFA"),
         ("未實現損益", f"NT$ {total_pnl:+,.0f} ({pnl_pct_total:+.1f}%)",
-         "#00D4AA" if total_pnl >= 0 else "#FF4B4B"),
+         "#FF4B4B" if total_pnl >= 0 else "#22C55E"),   # 台股慣例：獲利紅
         ("── 已實現 ──", "", "#444"),
         ("已實現損益", f"NT$ {realized_pnl:+,.0f}",
-         "#00D4AA" if realized_pnl >= 0 else "#FF4B4B"),
+         "#FF4B4B" if realized_pnl >= 0 else "#22C55E"),  # 台股慣例：獲利紅
         ("── 合計 ──", "", "#444"),
         ("總資產", f"NT$ {total_assets:,.0f}",
-         "#00D4AA" if total_assets >= ORIGINAL_CAPITAL else "#FF8C00"),
+         "#FF4B4B" if total_assets >= ORIGINAL_CAPITAL else "#FF8C00"),
         ("總損益", f"NT$ {(total_pnl+realized_pnl):+,.0f}",
-         "#00D4AA" if (total_pnl+realized_pnl) >= 0 else "#FF4B4B"),
+         "#FF4B4B" if (total_pnl+realized_pnl) >= 0 else "#22C55E"),  # 台股慣例：獲利紅
     ]
 
     for label, value, color in metrics:
@@ -797,10 +797,10 @@ with col_capital:
                 """, unsafe_allow_html=True)
             else:
                 proceeds = price * shares
-                pnl_color = "#00D4AA" if pnl >= 0 else "#FF4B4B"
+                pnl_color = "#FF4B4B" if pnl >= 0 else "#22C55E"  # 台股慣例：獲利紅、虧損綠
                 pnl_label = f"獲利 +NT${pnl:,.0f}" if pnl >= 0 else f"虧損 NT${pnl:,.0f}"
                 st.markdown(f"""
-                <div style='padding:5px 8px; border-left:3px solid {"#00D4AA" if pnl>=0 else "#FF4B4B"}; background:#1A1D27; border-radius:4px; margin-bottom:4px; font-size:0.8rem;'>
+                <div style='padding:5px 8px; border-left:3px solid {"#FF4B4B" if pnl>=0 else "#22C55E"}; background:#1A1D27; border-radius:4px; margin-bottom:4px; font-size:0.8rem;'>
                     <b style='color:#888;'>賣出</b> {sid} {sname} &nbsp;
                     {price:.2f} × {shares:.0f}股 &nbsp;
                     <span style='color:#00D4AA;'>+NT${proceeds:,.0f}</span> &nbsp;

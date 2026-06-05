@@ -69,7 +69,7 @@ for i, (inv_id, inv) in enumerate(INVESTORS.items()):
     }
 
     with cols[i]:
-        color = "#22C55E" if pnl >= 0 else "#FF3333"
+        color = "#FF4B4B" if pnl >= 0 else "#22C55E"  # 台股慣例：獲利紅、虧損綠
         st.markdown(f"""
         <div style='background:#1A1D27; border-radius:10px; padding:14px;
                     border-left:4px solid {color};'>
