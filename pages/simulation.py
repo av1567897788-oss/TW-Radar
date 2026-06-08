@@ -52,36 +52,36 @@ for i, (inv_id, inv) in enumerate(INVESTORS.items()):
     cap = get_sim_capital(inv_id)
     holdings = get_sim_holdings(inv_id)
 
-    # 市值估算（用買入價代替，實際需現價）
-    if not holdings.empty:
-        market_val = (holdings["buy_price"].astype(float) * holdings["shares"].astype(float)).sum()
-    else:
-        market_val = 0
-
-    total_assets = float(cap.get("cash", 0)) + market_val
-    orig = inv["capital"]
-    pnl = total_assets - orig
+    # 總資產 = 現金 + 持股市值（用買入均價估算，每日結算後更新）
+    real_cash    = float(cap.get("cash", 0))
+    invested_val = float(cap.get("total_invested", 0))  # sim_capital 存的持股成本
+    total_assets = real_cash + invested_val
+    orig = inv["capital"]   # 50,000
+    pnl  = total_assets - orig
     pnl_pct = pnl / orig * 100
 
     investor_data[inv_id] = {
         "total": total_assets, "pnl": pnl, "pnl_pct": pnl_pct,
-        "cash": cap.get("cash", 0), "realized": cap.get("realized_pnl", 0)
+        "cash": real_cash, "realized": cap.get("realized_pnl", 0),
+        "invested": invested_val
     }
 
     with cols[i]:
-        color = "#FF4B4B" if pnl >= 0 else "#22C55E"  # 台股慣例：獲利紅、虧損綠
+        # 台股慣例：超過 5 萬（起始）= 賺錢 → 紅；低於 5 萬 = 虧損 → 綠
+        color      = "#FF4B4B" if total_assets >= orig else "#22C55E"
+        pnl_label  = f"▲ +NT${pnl:,.0f}（+{pnl_pct:.1f}%）" if pnl >= 0 else f"▼ -NT${abs(pnl):,.0f}（{pnl_pct:.1f}%）"
         st.markdown(f"""
         <div style='background:#1A1D27; border-radius:10px; padding:14px;
                     border-left:4px solid {color};'>
             <div style='font-size:1.1rem; font-weight:bold;'>{inv["emoji"]} {inv["name"]}</div>
             <div style='color:#888; font-size:0.78rem; margin-bottom:8px;'>{inv["title"]}</div>
-            <div style='font-size:1.4rem; font-weight:bold; color:{color};'>
+            <div style='font-size:1.5rem; font-weight:bold; color:{color};'>
                 NT${total_assets:,.0f}
             </div>
-            <div style='color:{color}; font-size:0.9rem;'>{pnl:+,.0f}（{pnl_pct:+.1f}%）</div>
-            <div style='color:#888; font-size:0.75rem; margin-top:4px;'>
-                現金 NT${cap.get("cash",0):,.0f} ｜
-                已實現 NT${cap.get("realized_pnl",0):+,.0f}
+            <div style='color:{color}; font-size:0.88rem; font-weight:bold;'>{pnl_label}</div>
+            <div style='color:#555; font-size:0.73rem; margin-top:6px;'>
+                現金 NT${real_cash:,.0f} ｜ 持股成本 NT${invested_val:,.0f}<br/>
+                已實現損益 NT${cap.get("realized_pnl",0):+,.0f}
             </div>
         </div>
         """, unsafe_allow_html=True)
