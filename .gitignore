@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 data/portfolio.db
-data/simulation.db
+# simulation.db 需要推上 GitHub 讓 Streamlit Cloud 讀取
+# data/simulation.db
 data/sim_report_*.json
 .env
