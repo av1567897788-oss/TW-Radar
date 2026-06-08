@@ -18,6 +18,39 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from utils.database import init_db, get_holdings, get_capital, add_alert
 from utils.stock_data import get_stock_price, compute_technical_score, get_chip_score, get_institutional
+import subprocess
+
+
+def _push_simulation_db():
+    """模擬完成後，把 simulation.db 推到 GitHub 讓 Streamlit Cloud 同步"""
+    repo = os.path.dirname(os.path.abspath(__file__))
+    # token 從環境變數或 .streamlit/secrets.toml 取得，不寫死在程式碼裡
+    try:
+        token = os.environ.get("GITHUB_TOKEN", "")
+        if not token:
+            # 嘗試從 secrets.toml 讀取
+            import toml
+            secrets = toml.load(os.path.join(repo, ".streamlit", "secrets.toml"))
+            token = secrets.get("GITHUB_TOKEN", "")
+        if not token:
+            log("  ⚠️ 未設定 GITHUB_TOKEN，跳過雲端同步")
+            return
+
+        subprocess.run(["git", "add", "data/simulation.db"], cwd=repo, check=True, capture_output=True)
+        msg = f"Auto-sync simulation.db {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        r = subprocess.run(["git", "commit", "-m", msg], cwd=repo, capture_output=True)
+        if r.returncode == 0:
+            subprocess.run(
+                ["git", "push",
+                 f"https://{token}@github.com/av1567897788-oss/TW-Radar.git",
+                 "main"],
+                cwd=repo, check=True, capture_output=True
+            )
+            log("☁️  simulation.db 已推送至 GitHub（雲端同步完成）")
+        else:
+            log("☁️  simulation.db 無變化，跳過推送")
+    except Exception as e:
+        log(f"  ⚠️ DB 推送失敗（不影響本地模擬）：{e}")
 from utils.news_feed import get_all_news
 from utils.ai_engine import get_prophet_analysis
 
@@ -231,6 +264,8 @@ def setup_schedule():
             sys.path.insert(0, os.path.dirname(__file__))
             from sim_runner import run_daily_simulation
             run_daily_simulation()
+            # 模擬完成後推 DB 到 GitHub，讓雲端同步
+            _push_simulation_db()
         except Exception as e:
             log(f"  模擬失敗：{e}")
     schedule.every().day.at("20:00").do(job_virtual_sim)
