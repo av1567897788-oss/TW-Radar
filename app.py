@@ -176,15 +176,17 @@ st.divider()
 holdings = get_holdings()
 capital = get_capital()
 
-# ── 預先載入所有持股現價進快取（避免後續顯示0）──────────
+# ── 預先載入所有持股現價進快取（TWSE即時優先，避免後續顯示0）──
 for _, _row in holdings.iterrows():
     _sid = _row["stock_id"]
     _ck = f"price_{_sid}"
     _tk = f"{_ck}_time"
     if _ck not in st.session_state or \
        (datetime.now() - st.session_state.get(_tk, datetime.min)).seconds > 300:
-        _df = get_stock_price(_sid, days=5)
-        _price = float(_df["close"].iloc[-1]) if not _df.empty and "close" in _df.columns else float(_row["buy_price"])
+        _price = get_stock_current_price(_sid)
+        if _price <= 0:
+            _df = get_stock_price(_sid, days=5)
+            _price = float(_df["close"].iloc[-1]) if not _df.empty and "close" in _df.columns else float(_row["buy_price"])
         st.session_state[_ck] = _price
         st.session_state[_tk] = datetime.now()
 
@@ -300,24 +302,29 @@ def get_dynamic_stock_name(stock_id: str) -> str:
 
 
 def get_stock_current_price(stock_id: str) -> float:
-    """取得股票最新價（FinMind → TWSE 即時雙來源）"""
+    """取得股票最新價。TWSE 即時優先（最準），FinMind 備用（收盤後）。"""
     ck = f"price_{stock_id}"
-    if ck in st.session_state:
+    # 快取5分鐘（避免重複打 API）
+    cached_time = st.session_state.get(f"{ck}_time", datetime.min)
+    if ck in st.session_state and (datetime.now() - cached_time).seconds < 300:
         return st.session_state[ck]
-    # 先試 FinMind
-    df = get_stock_price(stock_id, days=5)
-    if not df.empty and "close" in df.columns:
-        price = float(df["close"].iloc[-1])
-        st.session_state[ck] = price
-        st.session_state[f"{ck}_time"] = datetime.now()
-        return price
-    # FinMind 失敗 → fallback TWSE 即時（學校網路友善）
+
+    # 1. TWSE 即時（盤中最準、學校網路友善）
     info = get_twse_realtime_info(stock_id)
     if info.get("price", 0) > 0:
         price = info["price"]
         st.session_state[ck] = price
         st.session_state[f"{ck}_time"] = datetime.now()
         return price
+
+    # 2. FinMind 收盤價（盤後備用）
+    df = get_stock_price(stock_id, days=5)
+    if not df.empty and "close" in df.columns:
+        price = float(df["close"].iloc[-1])
+        st.session_state[ck] = price
+        st.session_state[f"{ck}_time"] = datetime.now()
+        return price
+
     return 0.0
 
 # ── 警示列（全寬）──────────────────────────────────────
@@ -369,35 +376,87 @@ with col_market:
     else:
         st.info("⚠️ 加權指數暫無即時資料（非盤中或網路問題）")
 
-    # 走勢圖（以台積電近期走勢呈現大盤趨勢）
-    if not twii_df.empty and "close" in twii_df.columns:
-        fig = go.Figure()
-        if all(c in twii_df.columns for c in ["open", "max", "min", "close"]):
-            fig.add_trace(go.Candlestick(
-                x=twii_df["date"],
-                open=twii_df["open"].astype(float),
-                high=twii_df["max"].astype(float),
-                low=twii_df["min"].astype(float),
-                close=twii_df["close"].astype(float),
-                name="2330",
-                increasing_line_color="#FF4B4B",   # 台股慣例：漲=紅
-                decreasing_line_color="#22C55E"    # 台股慣例：跌=綠
-            ))
-        else:
-            fig.add_trace(go.Scatter(
-                x=twii_df["date"], y=twii_df["close"].astype(float),
-                line=dict(color="#00D4AA", width=2), name="台積電走勢"
-            ))
-        fig.update_layout(
-            height=240, margin=dict(l=0, r=0, t=5, b=0),
-            plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
-            font=dict(color="#FAFAFA", size=10),
-            xaxis=dict(showgrid=False, rangeslider_visible=False),
-            yaxis=dict(showgrid=True, gridcolor="#2A2D3A"),
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        st.markdown("<div style='color:#444; font-size:0.7rem;'>* K線顯示台積電(2330)走勢，與大盤高度相關</div>", unsafe_allow_html=True)
+    # 走勢圖（台積電K線呈現大盤趨勢；若FinMind無資料改用折線）
+    _chart_df = twii_df if not twii_df.empty and "close" in twii_df.columns else pd.DataFrame()
+
+    # 若 FinMind 資料空，嘗試 TWSE 官方歷史 API 取台積電資料
+    if _chart_df.empty:
+        try:
+            import requests as _r, json as _j
+            _dates = [(datetime.now() - timedelta(days=d)).strftime("%Y%m%d") for d in [0,30,60]]
+            for _d in _dates:
+                _resp = _r.get(
+                    "https://www.twse.com.tw/exchangeReport/STOCK_DAY",
+                    params={"response":"json","date":_d,"stockNo":"2330"},
+                    headers={"User-Agent":"Mozilla/5.0"}, timeout=8, verify=False
+                )
+                _data = _resp.json()
+                if _data.get("stat") == "OK" and _data.get("data"):
+                    _fields = _data["fields"]
+                    _rows = _data["data"]
+                    _tmp = pd.DataFrame(_rows, columns=_fields)
+                    _tmp = _tmp.rename(columns={
+                        "日期":"date","開盤價":"open","最高價":"max",
+                        "最低價":"min","收盤價":"close"
+                    })
+                    for col in ["open","max","min","close"]:
+                        if col in _tmp.columns:
+                            _tmp[col] = pd.to_numeric(
+                                _tmp[col].astype(str).str.replace(",",""), errors="coerce"
+                            )
+                    _chart_df = _tmp.dropna(subset=["close"])
+                    break
+        except Exception:
+            pass
+
+    if not _chart_df.empty:
+        try:
+            # 強制數值轉換（防止字串/NaN 導致圖跑不出來）
+            for _col in ["open", "max", "min", "close"]:
+                if _col in _chart_df.columns:
+                    _chart_df[_col] = pd.to_numeric(
+                        _chart_df[_col].astype(str).str.replace(",", ""), errors="coerce"
+                    )
+            _chart_df = _chart_df.dropna(subset=["close"])
+
+            fig = go.Figure()
+            if not _chart_df.empty and all(c in _chart_df.columns for c in ["open","max","min","close"]):
+                _valid = _chart_df.dropna(subset=["open","max","min","close"])
+                if not _valid.empty:
+                    fig.add_trace(go.Candlestick(
+                        x=_valid["date"],
+                        open=_valid["open"],
+                        high=_valid["max"],
+                        low=_valid["min"],
+                        close=_valid["close"],
+                        name="2330",
+                        increasing_line_color="#FF4B4B",
+                        decreasing_line_color="#22C55E"
+                    ))
+                else:
+                    fig.add_trace(go.Scatter(
+                        x=_chart_df["date"], y=_chart_df["close"],
+                        line=dict(color="#00D4AA", width=2), name="台積電走勢"
+                    ))
+            else:
+                fig.add_trace(go.Scatter(
+                    x=_chart_df["date"], y=_chart_df["close"],
+                    line=dict(color="#00D4AA", width=2), name="台積電走勢"
+                ))
+            fig.update_layout(
+                height=240, margin=dict(l=0, r=0, t=5, b=0),
+                plot_bgcolor="#0E1117", paper_bgcolor="#0E1117",
+                font=dict(color="#FAFAFA", size=10),
+                xaxis=dict(showgrid=False, rangeslider_visible=False),
+                yaxis=dict(showgrid=True, gridcolor="#2A2D3A"),
+                showlegend=False
+            )
+            st.plotly_chart(fig, use_container_width=True)
+            st.markdown("<div style='color:#444; font-size:0.7rem;'>* K線顯示台積電(2330)走勢，與大盤高度相關</div>", unsafe_allow_html=True)
+        except Exception as _e:
+            st.markdown(f"<div style='color:#555; font-size:0.8rem;'>⚠️ K線圖暫時無法載入，請重新整理（{type(_e).__name__}）</div>", unsafe_allow_html=True)
+    else:
+        st.markdown("<div style='color:#555; font-size:0.8rem;'>⚠️ K線資料載入中，請稍後重新整理</div>", unsafe_allow_html=True)
 
     # ── 我的持股即時行情（有持股才顯示）────────────────────
     if not holdings.empty:
@@ -409,12 +468,14 @@ with col_market:
             buy_price = float(row["buy_price"])
             shares = float(row["shares"])
 
-            # 取最新價
+            # 取最新價（TWSE即時優先）
             cache_key = f"price_{sid}"
             if cache_key not in st.session_state or \
                (datetime.now() - st.session_state.get(f"{cache_key}_time", datetime.min)).seconds > 300:
-                df_p = get_stock_price(sid, days=5)
-                cur = float(df_p["close"].iloc[-1]) if not df_p.empty and "close" in df_p.columns else buy_price
+                cur = get_stock_current_price(sid)
+                if cur <= 0:
+                    df_p = get_stock_price(sid, days=5)
+                    cur = float(df_p["close"].iloc[-1]) if not df_p.empty and "close" in df_p.columns else buy_price
                 st.session_state[cache_key] = cur
                 st.session_state[f"{cache_key}_time"] = datetime.now()
             else:
@@ -639,12 +700,14 @@ with col_portfolio:
             else:
                 qty_display = f"{int(shares)}股"
 
-            # 取最新價（快取5分鐘）
+            # 取最新價（TWSE即時優先，快取5分鐘）
             cache_key = f"price_{stock_id}"
             if cache_key not in st.session_state or \
                (datetime.now() - st.session_state.get(f"{cache_key}_time", datetime.min)).seconds > 300:
-                df = get_stock_price(stock_id, days=5)
-                current_price = float(df["close"].iloc[-1]) if not df.empty and "close" in df.columns else buy_price
+                current_price = get_stock_current_price(stock_id)
+                if current_price <= 0:
+                    df = get_stock_price(stock_id, days=5)
+                    current_price = float(df["close"].iloc[-1]) if not df.empty and "close" in df.columns else buy_price
                 st.session_state[cache_key] = current_price
                 st.session_state[f"{cache_key}_time"] = datetime.now()
             else:
@@ -1109,19 +1172,61 @@ with rec_col:
         <span style='color:#888;'>台股慣例：紅漲綠跌｜滿分100分（五層各20）｜每日14:10更新｜非投資建議</span>
     </div>""", unsafe_allow_html=True)
 
-    if st.button("🔄 更新推薦股", key="refresh_rec"):
-        if "rec_stocks" in st.session_state:
-            del st.session_state["rec_stocks"]
+    _btn_col1, _btn_col2 = st.columns(2)
+    with _btn_col1:
+        if st.button("🔄 更新（核心30支）", key="refresh_rec"):
+            if "rec_stocks" in st.session_state:
+                del st.session_state["rec_stocks"]
+    with _btn_col2:
+        if st.button("🌐 全市場掃描（慢）", key="refresh_rec_full"):
+            if "rec_stocks" in st.session_state:
+                del st.session_state["rec_stocks"]
+            st.session_state["use_full_scan"] = True
 
-    # 快取（每日更新一次）
+    # 推薦股快取載入
     if "rec_stocks" not in st.session_state:
-        with st.spinner("掃描25支股票中（需30-60秒）..."):
-            atk = st.session_state.get("atk_cache") or detect_attacks()
-            st.session_state["atk_cache"] = atk
-            st.session_state["rec_stocks"] = get_recommended_stocks(
-                top_n=15, attack_data=atk,
-                news_list=st.session_state.get("news_data", [])
-            )
+        _use_full = st.session_state.pop("use_full_scan", False)
+        _label = "全市場掃描中（1-3分鐘，涵蓋所有產業）..." if _use_full else "掃描核心30支股票中（約15-30秒）..."
+        with st.spinner(_label):
+            try:
+                atk = st.session_state.get("atk_cache") or {}
+                st.session_state["atk_cache"] = atk
+                news = st.session_state.get("news_data", [])
+
+                if _use_full:
+                    # 全市場：TWSE批量預篩 + 100支深度掃描
+                    final = get_recommended_stocks(top_n=15, attack_data=atk, news_list=news)
+                else:
+                    # 快速：核心30支（平行）
+                    from utils.screener import CORE_LIST, score_stock_full
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+                    scored = []
+                    def _sc(item):
+                        sid, sname = item
+                        return score_stock_full(sid, sname, atk, news)
+                    with ThreadPoolExecutor(max_workers=8) as _exe:
+                        _futs = {_exe.submit(_sc, item): item for item in CORE_LIST[:30]}
+                        for _fut in as_completed(_futs):
+                            s = _fut.result()
+                            if s:
+                                scored.append(s)
+                    scored.sort(key=lambda x: x["total_score"], reverse=True)
+                    for i, r in enumerate(scored[:15]):
+                        reasons = []
+                        if r["tech_score"]  >= 16: reasons.append("技術面強勢")
+                        if r["chip_score"]  >= 12: reasons.append("外資積極進場")
+                        if r["fund_score"]  >= 12: reasons.append("基本面亮眼")
+                        if r["sect_score"]  >= 12: reasons.append("產業題材熱")
+                        if r["proph_score"] >= 10: reasons.append("主力攻擊訊號")
+                        if r.get("rsi") and r["rsi"] < 40:
+                            reasons.append(f"超賣反彈(RSI={r['rsi']:.0f})")
+                        r["reasons"] = reasons or ["多項指標達標"]
+                        r["rank"] = i + 1
+                    final = scored[:15]
+
+                st.session_state["rec_stocks"] = final
+            except Exception:
+                st.session_state["rec_stocks"] = []
 
     rec_stocks = st.session_state.get("rec_stocks", [])
     if not rec_stocks:
