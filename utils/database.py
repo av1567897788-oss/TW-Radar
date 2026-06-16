@@ -1,12 +1,28 @@
 import sqlite3
+import threading
 import pandas as pd
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent.parent / "data" / "portfolio.db"
+_DATA_DIR = Path(__file__).parent.parent / "data"
+_DB_PATHS = {
+    "default": _DATA_DIR / "portfolio.db",
+    "yurong":  _DATA_DIR / "portfolio_yurong.db",
+}
+_local = threading.local()
+
+# 向後相容
+DB_PATH = _DB_PATHS["default"]
+
+
+def set_user(user: str):
+    """切換當前執行緒使用的 DB。在 Streamlit 每個 session 開頭呼叫一次。"""
+    _local.db_path = _DB_PATHS.get(user, _DB_PATHS["default"])
+
 
 def get_connection():
-    DB_PATH.parent.mkdir(exist_ok=True)
-    return sqlite3.connect(DB_PATH)
+    db_path = getattr(_local, "db_path", _DB_PATHS["default"])
+    db_path.parent.mkdir(exist_ok=True)
+    return sqlite3.connect(db_path)
 
 def init_db():
     with get_connection() as conn:

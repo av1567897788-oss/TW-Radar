@@ -9,7 +9,7 @@ import json
 sys.path.insert(0, os.path.dirname(__file__))
 
 from utils.database import (
-    init_db, get_holdings, add_holding, sell_holding, remove_holding,
+    init_db, set_user, get_holdings, add_holding, sell_holding, remove_holding,
     get_capital, update_available_cash, get_unread_alerts, mark_alerts_read,
     get_trade_history
 )
@@ -28,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-init_db()
+# init_db() 移到 check_password 之後，確保先知道是哪個用戶
 
 # ── 自動刷新（盤中5分鐘，盤外30分鐘）──────────────────
 _now = datetime.utcnow() + timedelta(hours=8)  # 台灣時間 UTC+8
@@ -67,18 +67,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── 密碼驗證 ────────────────────────────────────────────
+# ── 密碼驗證（雙用戶）──────────────────────────────────
 def check_password():
-    if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-    if st.session_state.authenticated:
+    if st.session_state.get("authenticated"):
         return True
     st.markdown("## 📡 TW-Radar 台股雷達站")
     password = st.text_input("請輸入密碼", type="password", key="pwd_input")
     if st.button("登入"):
-        correct = st.secrets.get("auth", {}).get("password", "changeme")
-        if password == correct:
+        auth = st.secrets.get("auth", {})
+        pw_default = auth.get("password", "changeme")
+        pw_yurong  = auth.get("password_yurong", "")
+        if password == pw_default:
             st.session_state.authenticated = True
+            st.session_state.active_user   = "default"
+            st.rerun()
+        elif pw_yurong and password == pw_yurong:
+            st.session_state.authenticated = True
+            st.session_state.active_user   = "yurong"
             st.rerun()
         else:
             st.error("密碼錯誤")
@@ -87,10 +92,16 @@ def check_password():
 if not check_password():
     st.stop()
 
+# ── 依登入用戶切換 DB ────────────────────────────────────
+_active_user = st.session_state.get("active_user", "default")
+set_user(_active_user)
+init_db()
+
 # ── 標題列 ──────────────────────────────────────────────
 col_title, col_api, col_time = st.columns([3, 1, 1])
 with col_title:
-    st.markdown("# 📡 TW-Radar 台股雷達站")
+    _user_label = "👤 姷縈" if _active_user == "yurong" else "👤 沛駩"
+    st.markdown(f"# 📡 TW-Radar 台股雷達站 &nbsp; <span style='font-size:0.7rem; color:#888;'>{_user_label}</span>", unsafe_allow_html=True)
 with col_time:
     _tw_now = datetime.utcnow() + timedelta(hours=8)  # UTC+8 台灣時間
     st.markdown(f"<div style='text-align:right; color:#888; padding-top:10px;'>{_tw_now.strftime('%Y/%m/%d %H:%M')} (台灣)</div>", unsafe_allow_html=True)
