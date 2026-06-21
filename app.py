@@ -188,13 +188,27 @@ holdings = get_holdings()
 capital = get_capital()
 
 # ── 預先載入所有持股現價進快取（TWSE即時優先，避免後續顯示0）──
+# 注意：get_stock_current_price 定義在下方，此處直接用 TWSE 即時 + FinMind fallback
+import requests as _preload_req
 for _, _row in holdings.iterrows():
     _sid = _row["stock_id"]
     _ck = f"price_{_sid}"
     _tk = f"{_ck}_time"
     if _ck not in st.session_state or \
        (datetime.now() - st.session_state.get(_tk, datetime.min)).seconds > 300:
-        _price = get_stock_current_price(_sid)
+        _price = 0.0
+        try:
+            for _ex in ["tse", "otc"]:
+                _r = _preload_req.get(
+                    f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={_ex}_{_sid}.tw&json=1&delay=0",
+                    headers={"User-Agent": "Mozilla/5.0"}, timeout=5, verify=False
+                )
+                _item = _r.json().get("msgArray", [{}])[0]
+                _price = float(_item.get("z", 0) or _item.get("y", 0) or 0)
+                if _price > 0:
+                    break
+        except Exception:
+            pass
         if _price <= 0:
             _df = get_stock_price(_sid, days=5)
             _price = float(_df["close"].iloc[-1]) if not _df.empty and "close" in _df.columns else float(_row["buy_price"])
