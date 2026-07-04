@@ -1,0 +1,32 @@
+name: Daily Simulation
+
+on:
+  schedule:
+    - cron: '23 6 * * 1-5'  # 14:23 台北時間，週一到週五（收盤後）
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  run-sim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install -r requirements.txt
+
+      - run: python sim_runner.py
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      - run: |
+          git config user.name "tw-radar-bot"
+          git config user.email "actions@github.com"
+          git add data/
+          git diff --cached --quiet || git commit -m "Auto-sync simulation.db $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push
