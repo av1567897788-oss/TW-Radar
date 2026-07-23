@@ -20,9 +20,33 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - run: python sim_runner.py
+      - name: Run simulation (retry on transient API failure)
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          for i in 1 2 3; do
+            echo "=== attempt $i/3 ==="
+            if python sim_runner.py; then
+              echo "SIM_OK=true" >> "$GITHUB_ENV"
+              break
+            fi
+            echo "SIM_OK=false" >> "$GITHUB_ENV"
+            [ "$i" -lt 3 ] && sleep 60
+          done
+
+      - name: Write run status marker
+        run: |
+          mkdir -p data
+          python3 - <<'PY'
+          import json, os, datetime
+          status = "success" if os.environ.get("SIM_OK") == "true" else "failed"
+          with open("data/last_run_status.json", "w", encoding="utf-8") as f:
+              json.dump({
+                  "date": datetime.date.today().isoformat(),
+                  "status": status,
+                  "checked_at_utc": datetime.datetime.utcnow().isoformat()
+              }, f, ensure_ascii=False, indent=2)
+          PY
 
       - run: |
           git config user.name "tw-radar-bot"
@@ -30,3 +54,9 @@ jobs:
           git add data/
           git diff --cached --quiet || git commit -m "Auto-sync simulation.db $(date -u +'%Y-%m-%d %H:%M UTC')"
           git push
+
+      - name: Fail job if all retries exhausted
+        if: env.SIM_OK != 'true'
+        run: |
+          echo "::error::sim_runner.py failed 3 times today — check FinMind/TWSE API status"
+          exit 1
