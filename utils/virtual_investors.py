@@ -322,5 +322,5 @@ def get_accuracy_stats() -> dict:
         "total": total,
         "correct": correct,
         "accuracy": round(correct / total * 100, 1) if total > 0 else 0,
-        "by_signal": df.groupby(["signal", "result"]).size().to_dict()
+        "by_signal": {f"{k[0]}_{k[1]}": v for k, v in df.groupby(["signal", "result"]).size().to_dict().items()}
     }
