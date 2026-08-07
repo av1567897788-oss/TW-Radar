@@ -173,6 +173,21 @@ else:
     st.markdown("<div style='font-size:0.72rem; color:#FF4B4B; text-align:right;'>❌ 網路異常</div>",
                 unsafe_allow_html=True)
 
+# ── FinMind 限流提示 ────────────────────────────────────
+# 以前限流只會讓各處顯示「資料不足」，看起來像股票沒資料。
+# 這裡如實說明是額度用盡，並告知已改用 TWSE 官方資料頂著。
+from utils.stock_data import FINMIND_STATUS as _fm_status
+if _fm_status.get("rate_limited"):
+    st.markdown(
+        "<div style='background:#2A2410; border:1px solid #FFD700; border-radius:8px; "
+        "padding:8px 14px; margin-bottom:8px; font-size:0.85rem;'>"
+        "<b style='color:#FFD700;'>⚠️ FinMind 額度已用盡</b> "
+        "<span style='color:#888;'>技術面與籌碼面已自動改用 TWSE 官方資料，"
+        "基本面（月營收／財報）這段時間會暫缺。"
+        "在 Streamlit Secrets 加入 <code>FINMIND_TOKEN</code> 即可解除。</span></div>",
+        unsafe_allow_html=True
+    )
+
 # ── 餘額不足警示橫幅 ────────────────────────────────────
 if api_status["status"] == "no_credit":
     st.markdown("""

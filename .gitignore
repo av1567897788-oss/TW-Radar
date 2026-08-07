@@ -6,4 +6,5 @@ data/portfolio.db
 # simulation.db 需要推上 GitHub 讓 Streamlit Cloud 讀取
 # data/simulation.db
 data/sim_report_*.json
+data/_api_cache/
 .env

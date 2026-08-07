@@ -2,9 +2,22 @@ import requests
 import pandas as pd
 from datetime import datetime, timedelta
 import time
+import os
+import json
+import hashlib
+from pathlib import Path
 
 FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
-FINMIND_TOKEN = ""  # 填入後可提升到600次/小時
+
+# FinMind 匿名呼叫每小時額度極低，一輪選股就會打爆（回 HTTP 402
+# "Requests reach the upper limit"），舊版把這個錯誤靜默吞掉回傳空表，
+# 畫面上就變成「資料不足」「資料不完整」。
+# token 從環境變數或 .streamlit/secrets.toml 讀，不寫死在程式碼。
+_CACHE_DIR = Path(__file__).parent.parent / "data" / "_api_cache"
+_CACHE_TTL = 3600  # 秒；盤中一小時內同一筆不重複打
+
+# 給 UI 讀的即時狀態，讓畫面能分辨「真的沒資料」與「被限流」
+FINMIND_STATUS = {"rate_limited": False, "msg": "", "using_stale": False}
 
 RELIABLE_SOURCES = [
     "https://feeds.finance.yahoo.com/rss/2.0/headline?s=^TWII&region=TW&lang=zh-TW",
@@ -12,17 +25,67 @@ RELIABLE_SOURCES = [
 ]
 
 
+def get_finmind_token() -> str:
+    tok = os.environ.get("FINMIND_TOKEN", "")
+    if tok:
+        return tok
+    try:
+        import streamlit as st
+        return st.secrets.get("FINMIND_TOKEN", "")
+    except Exception:
+        return ""
+
+
+# 向後相容：舊程式碼有引用這個名字
+FINMIND_TOKEN = get_finmind_token()
+
+
+def _cache_path(key: str) -> Path:
+    return _CACHE_DIR / (hashlib.md5(key.encode()).hexdigest() + ".json")
+
+
+def _cache_read(key: str, max_age: int = _CACHE_TTL):
+    """回傳 (df, is_stale)；沒有快取回 (None, False)。"""
+    p = _cache_path(key)
+    if not p.exists():
+        return None, False
+    try:
+        age = time.time() - p.stat().st_mtime
+        df = pd.DataFrame(json.loads(p.read_text(encoding="utf-8")))
+        return df, age > max_age
+    except Exception:
+        return None, False
+
+
+def _cache_write(key: str, df: pd.DataFrame):
+    try:
+        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _cache_path(key).write_text(
+            df.to_json(orient="records", force_ascii=False), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
 def _fm_get(dataset: str, stock_id: str, start_date: str, end_date: str = None) -> pd.DataFrame:
     if end_date is None:
         end_date = datetime.today().strftime("%Y-%m-%d")
+
+    cache_key = f"{dataset}|{stock_id}|{start_date}|{end_date}"
+    cached, is_stale = _cache_read(cache_key)
+    if cached is not None and not is_stale:
+        return cached
+
     params = {
         "dataset": dataset,
         "data_id": stock_id,
         "start_date": start_date,
         "end_date": end_date,
     }
-    if FINMIND_TOKEN:
-        params["token"] = FINMIND_TOKEN
+    token = get_finmind_token()
+    if token:
+        params["token"] = token
+
     try:
         try:
             resp = requests.get(FINMIND_API, params=params, timeout=10)
@@ -30,17 +93,91 @@ def _fm_get(dataset: str, stock_id: str, start_date: str, end_date: str = None) 
             import urllib3
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             resp = requests.get(FINMIND_API, params=params, timeout=10, verify=False)
+
         data = resp.json()
         if data.get("status") == 200:
-            return pd.DataFrame(data["data"])
-    except Exception:
-        pass
+            FINMIND_STATUS.update({"rate_limited": False, "msg": "", "using_stale": False})
+            df = pd.DataFrame(data["data"])
+            _cache_write(cache_key, df)
+            return df
+
+        # 402 = 額度用盡。如實記錄，不要假裝成「查無資料」
+        if resp.status_code == 402 or data.get("status") == 402:
+            FINMIND_STATUS.update({
+                "rate_limited": True,
+                "msg": "FinMind 額度已用盡（未設定 token 時每小時上限極低），"
+                       "請在 Secrets 加入 FINMIND_TOKEN",
+            })
+    except Exception as e:
+        FINMIND_STATUS.update({"rate_limited": False, "msg": f"FinMind 連線失敗：{e}"[:120]})
+
+    # 打不到就退回舊快取，寧可用昨天的資料，也不要整頁顯示「資料不足」
+    if cached is not None:
+        FINMIND_STATUS["using_stale"] = True
+        return cached
     return pd.DataFrame()
+
+
+def _twse_stock_day(stock_id: str, days: int) -> pd.DataFrame:
+    """
+    TWSE 官方日成交資料（免 token、限制寬鬆），FinMind 限流時的股價備援。
+    回傳欄位對齊 FinMind：date / open / max / min / close / Trading_Volume
+    """
+    rows = []
+    months = max(1, days // 30 + 2)
+    cursor = datetime.today().replace(day=1)
+    for _ in range(months):
+        try:
+            r = requests.get(
+                "https://www.twse.com.tw/exchangeReport/STOCK_DAY",
+                params={"response": "json", "date": cursor.strftime("%Y%m%d"), "stockNo": stock_id},
+                headers={"User-Agent": "Mozilla/5.0"}, timeout=10, verify=False,
+            )
+            j = r.json()
+            if j.get("stat") == "OK":
+                for d in j.get("data", []):
+                    try:
+                        y, m, dd = d[0].split("/")
+                        date = f"{int(y) + 1911}-{int(m):02d}-{int(dd):02d}"
+                        rows.append({
+                            "date": date,
+                            "Trading_Volume": int(d[1].replace(",", "")),
+                            "open": float(d[3].replace(",", "")),
+                            "max": float(d[4].replace(",", "")),
+                            "min": float(d[5].replace(",", "")),
+                            "close": float(d[6].replace(",", "")),
+                        })
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        cursor = (cursor - timedelta(days=1)).replace(day=1)
+        time.sleep(0.3)  # TWSE 打太快會擋
+
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    df["date"] = pd.to_datetime(df["date"])
+    return df.sort_values("date").drop_duplicates("date").reset_index(drop=True)
 
 
 def get_stock_price(stock_id: str, days: int = 90) -> pd.DataFrame:
     start = (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d")
     df = _fm_get("TaiwanStockPrice", stock_id, start)
+
+    # FinMind 沒給資料就改打 TWSE 官方，技術面評分才不會整批變成「資料不足」
+    if df.empty:
+        cache_key = f"TWSE_STOCK_DAY|{stock_id}|{days}"
+        cached, is_stale = _cache_read(cache_key)
+        if cached is not None and not is_stale:
+            df = cached
+        else:
+            df = _twse_stock_day(stock_id, days)
+            if not df.empty:
+                _cache_write(cache_key, df)
+            elif cached is not None:
+                df = cached
+
     if not df.empty and "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"])
         df = df.sort_values("date")
@@ -48,9 +185,51 @@ def get_stock_price(stock_id: str, days: int = 90) -> pd.DataFrame:
 
 
 def get_institutional(stock_id: str, days: int = 30) -> pd.DataFrame:
-    """三大法人買賣超"""
+    """三大法人買賣超。FinMind 限流時改用 TWSE 全市場日報表回補。"""
     start = (datetime.today() - timedelta(days=days)).strftime("%Y-%m-%d")
-    return _fm_get("TaiwanStockInstitutionalInvestorsBuySell", stock_id, start)
+    df = _fm_get("TaiwanStockInstitutionalInvestorsBuySell", stock_id, start)
+    if df.empty:
+        df = _twse_institutional_fallback(stock_id)
+    return df
+
+
+def _twse_institutional_fallback(stock_id: str, trading_days: int = 8) -> pd.DataFrame:
+    """
+    用 TWSE 每日全市場三大法人報表拼出單一檔股票的近期買賣超。
+    每個日期的全市場報表只打一次並落地快取，選股掃描時所有股票共用，
+    比逐檔打 FinMind 省掉幾十次請求。
+    欄位對齊 get_chip_score 期待的 name / buy / sell / date。
+    """
+    rows = []
+    cursor = datetime.today()
+    checked = 0
+    while checked < trading_days and (datetime.today() - cursor).days < 30:
+        if cursor.weekday() < 5:
+            date_str = cursor.strftime("%Y%m%d")
+            key = f"TWSE_INST_ALL|{date_str}"
+            cached, is_stale = _cache_read(key, max_age=86400 * 30)
+            day_df = cached if cached is not None and not is_stale else None
+            if day_df is None:
+                day_df = get_twse_institutional_all(date_str)
+                if not day_df.empty:
+                    _cache_write(key, day_df)
+                time.sleep(0.3)
+            if not day_df.empty and "stock_id" in day_df.columns:
+                hit = day_df[day_df["stock_id"] == stock_id]
+                if not hit.empty:
+                    r = hit.iloc[0]
+                    iso = cursor.strftime("%Y-%m-%d")
+                    for name, col in [("Foreign_Investor", "foreign_net"),
+                                      ("Investment_Trust", "invest_net")]:
+                        net = float(r.get(col, 0) or 0)
+                        rows.append({
+                            "date": iso, "stock_id": stock_id, "name": name,
+                            "buy": max(net, 0.0), "sell": max(-net, 0.0),
+                        })
+                    checked += 1
+        cursor -= timedelta(days=1)
+
+    return pd.DataFrame(rows)
 
 
 def get_margin_trading(stock_id: str, days: int = 30) -> pd.DataFrame:
@@ -59,12 +238,34 @@ def get_margin_trading(stock_id: str, days: int = 30) -> pd.DataFrame:
     return _fm_get("TaiwanStockMarginPurchaseShortSale", stock_id, start)
 
 
+def get_all_stock_names() -> dict:
+    """全市場 代號→股名 對照表（TWSE 官方，免 token）。快取一天。"""
+    key = "TWSE_NAME_MAP"
+    cached, is_stale = _cache_read(key, max_age=86400)
+    if cached is not None and not is_stale and not cached.empty:
+        return dict(zip(cached["stock_id"], cached["stock_name"]))
+
+    df = get_twse_all_stocks_today()
+    if not df.empty and {"stock_id", "stock_name"} <= set(df.columns):
+        out = df[["stock_id", "stock_name"]].drop_duplicates("stock_id").copy()
+        out["stock_name"] = out["stock_name"].astype(str).str.strip()
+        _cache_write(key, out)
+        return dict(zip(out["stock_id"], out["stock_name"]))
+
+    if cached is not None and not cached.empty:  # 過期也比沒有好
+        return dict(zip(cached["stock_id"], cached["stock_name"]))
+    return {}
+
+
 def get_stock_info(stock_id: str) -> dict:
-    """取得股票基本資訊（名稱）"""
+    """取得股票基本資訊（名稱）。FinMind 限流時退回 TWSE 對照表。"""
+    name = get_all_stock_names().get(stock_id)
+    if name:
+        return {"name": name}
     try:
         resp = requests.get(
             "https://api.finmindtrade.com/api/v4/data",
-            params={"dataset": "TaiwanStockInfo", "token": FINMIND_TOKEN},
+            params={"dataset": "TaiwanStockInfo", "token": get_finmind_token()},
             timeout=10, verify=False
         )
         data = resp.json()
@@ -271,13 +472,23 @@ def get_twse_all_stocks_today() -> pd.DataFrame:
             "https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL",
             params={"response": "json", "date": today},
             headers={"User-Agent": "Mozilla/5.0"},
-            timeout=15, verify=False
+            timeout=20, verify=False
         )
-        data = r.json()
-        if data.get("stat") != "OK" or not data.get("data"):
-            return pd.DataFrame()
-        fields = data.get("fields", [])
-        df = pd.DataFrame(data["data"], columns=fields)
+
+        # TWSE 這支已改成不論 response 參數都回 CSV，舊版當成 JSON 解析
+        # 會直接丟例外被吞掉，全市場掃描與股名對照因此長期是空的。
+        try:
+            data = r.json()
+            if data.get("stat") != "OK" or not data.get("data"):
+                return pd.DataFrame()
+            df = pd.DataFrame(data["data"], columns=data.get("fields", []))
+        except ValueError:
+            import io
+            df = pd.read_csv(io.StringIO(r.text), dtype=str)
+            df.columns = [str(c).strip().strip('"') for c in df.columns]
+            for c in df.columns:
+                df[c] = df[c].astype(str).str.strip().str.strip('"')
+
         # 標準化欄位名稱
         rename = {
             "證券代號": "stock_id",
@@ -310,8 +521,10 @@ def get_twse_institutional_all(date_str: str = None) -> pd.DataFrame:
         from datetime import datetime
         if not date_str:
             date_str = datetime.now().strftime("%Y%m%d")
+        # T86 = 三大法人買賣超日報。舊版用的 TWT43U 欄名重複（多個「買進股數」），
+        # pandas 會產生重複欄位讓後面的 rename 失效，整個籌碼面就變成 0 分。
         r = requests.get(
-            "https://www.twse.com.tw/fund/TWT43U",
+            "https://www.twse.com.tw/fund/T86",
             params={"response": "json", "date": date_str, "selectType": "ALLBUT0999"},
             headers={"User-Agent": "Mozilla/5.0"},
             timeout=15, verify=False
@@ -321,21 +534,17 @@ def get_twse_institutional_all(date_str: str = None) -> pd.DataFrame:
             return pd.DataFrame()
         fields = data.get("fields", [])
         df = pd.DataFrame(data["data"], columns=fields)
-        # 標準化
-        rename_map = {}
-        for c in fields:
-            if "代號" in c or "代碼" in c:
-                rename_map[c] = "stock_id"
-            elif "外資" in c and "合計" in c:
-                rename_map[c] = "foreign_net"
-            elif "投信" in c:
-                rename_map[c] = "invest_net"
-            elif "自營商" in c and "合計" not in c and "自行" not in c:
-                rename_map[c] = "dealer_net"
-        df = df.rename(columns=rename_map)
+        rename_map = {
+            "證券代號": "stock_id",
+            "證券名稱": "stock_name",
+            "外陸資買賣超股數(不含外資自營商)": "foreign_net",
+            "投信買賣超股數": "invest_net",
+            "自營商買賣超股數": "dealer_net",
+        }
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
         if "stock_id" not in df.columns:
-            # 嘗試第一欄為 stock_id
             df = df.rename(columns={fields[0]: "stock_id"})
+        df["stock_id"] = df["stock_id"].astype(str).str.strip()
 
         df = df[df["stock_id"].str.match(r"^\d{4}$", na=False)]
         for col in ["foreign_net", "invest_net", "dealer_net"]:
