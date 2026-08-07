@@ -133,10 +133,12 @@ _net_cache_key = "net_status_cache"
 _net_time_key  = "net_status_time"
 _net_expired   = (datetime.now() - st.session_state.get(_net_time_key, datetime.min)).seconds > 300
 
-if _net_expired or _net_cache_key not in st.session_state:
+@st.cache_data(ttl=300, show_spinner=False)
+def _probe_network() -> dict:
+    """三個 API 的可用性探測。跨 session 共用快取，避免每個人開站都重打一次。"""
     import requests as _req
 
-    def _probe(url, timeout=4):
+    def _probe(url, timeout=2):
         try:
             r = _req.get(url, timeout=timeout, verify=False,
                          headers={"User-Agent": "Mozilla/5.0"})
@@ -144,11 +146,14 @@ if _net_expired or _net_cache_key not in st.session_state:
         except Exception:
             return False
 
-    st.session_state[_net_cache_key] = {
+    return {
         "twse":    _probe("https://mis.twse.com.tw"),
         "finmind": _probe("https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo"),
         "general": _probe("https://www.google.com"),
     }
+
+if _net_expired or _net_cache_key not in st.session_state:
+    st.session_state[_net_cache_key] = _probe_network()
     st.session_state[_net_time_key] = datetime.now()
 
 _ns = st.session_state.get(_net_cache_key, {})
@@ -201,7 +206,7 @@ for _, _row in holdings.iterrows():
             for _ex in ["tse", "otc"]:
                 _r = _preload_req.get(
                     f"https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch={_ex}_{_sid}.tw&json=1&delay=0",
-                    headers={"User-Agent": "Mozilla/5.0"}, timeout=5, verify=False
+                    headers={"User-Agent": "Mozilla/5.0"}, timeout=3, verify=False
                 )
                 _item = _r.json().get("msgArray", [{}])[0]
                 _price = float(_item.get("z", 0) or _item.get("y", 0) or 0)

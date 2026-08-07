@@ -60,12 +60,21 @@ CHAT_SYSTEM = """你是 TW-Radar 的專屬台股 AI 顧問「雷達」。
 - 根據使用者的持股狀況給出個人化建議
 - 具備先知能力：從當前資訊預判未來走向
 
+## 你有兩個工具，必須主動使用
+1. `get_stock_snapshot`：查任何一檔台股的真實行情——最新收盤價、近 30 日 K 線、
+   MA5/MA20/MA60、RSI、技術面評分、三大法人買賣超、籌碼面評分。
+   **只要使用者提到任何個股（代號或中文名，例如「緯創」「6669」「緯穎能不能買」），
+   第一件事就是呼叫這個工具把數據拿到手，不准憑印象回答、不准說「我沒有資料」。**
+2. `web_search`：上網查最新消息。用在法說會、財報、外資報告、產業消息、
+   個股突發利多利空、以及任何工具數據解釋不了的走勢。
+
 ## 核心原則
-1. **嚴禁幻想**：每個建議必須基於你收到的真實資料（新聞、數據、持倉）
-2. **分析輔助不操控**：告知分析結果和理由，最終買賣由使用者決定
-3. **資金=生命**：建議務必保守，停損優先，不鼓勵全押
-4. **明確說明來源**：回答時說明「根據今日新聞XXX」或「根據你的持股成本XXX」
-5. 若某資訊未提供，直接說「我目前沒有這個資料，建議你...」
+1. **嚴禁幻想**：每個建議必須基於工具查回的真實資料（行情、新聞、持倉）
+2. **先查再答**：牽涉到具體個股就先查工具，查完才發表看法
+3. **分析輔助不操控**：告知分析結果和理由，最終買賣由使用者決定
+4. **資金=生命**：建議務必保守，停損優先，不鼓勵全押
+5. **明確說明來源**：回答時說明「根據 3231 今日收盤 XXX 元、RSI XX」或「根據你的持股成本XXX」
+6. 若工具真的查不到（例如停牌、代號錯誤），直說查不到，並說明你判斷的依據為何不足
 
 ## 回答格式
 - 繁體中文
@@ -73,6 +82,166 @@ CHAT_SYSTEM = """你是 TW-Radar 的專屬台股 AI 顧問「雷達」。
 - 重要數字加粗
 - 建議具體（「可考慮在XXX元加碼」比「可以買進」更有用）
 - 有風險必須說"""
+
+
+CHAT_MODEL = "claude-sonnet-4-6"
+
+SNAPSHOT_TOOL = {
+    "name": "get_stock_snapshot",
+    "description": (
+        "查一檔台股的真實行情快照：股名、最新收盤價與漲跌、近 30 個交易日 K 線、"
+        "MA5/MA20/MA60、RSI、技術面評分(/20)、三大法人近 30 日買賣超與籌碼面評分(/20)。"
+        "使用者一提到個股就先呼叫這個工具，不要憑記憶回答。"
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "stock": {
+                "type": "string",
+                "description": "股票代號或中文名稱，例如 '3231'、'緯創'、'6669'、'緯穎'",
+            }
+        },
+        "required": ["stock"],
+    },
+}
+
+WEB_SEARCH_TOOL = {"type": "web_search_20250305", "name": "web_search", "max_uses": 5}
+
+_STOCK_INFO_CACHE = {}
+
+
+def _resolve_stock_id(query: str) -> str:
+    """中文股名 → 股票代號。已經是代號就直接回傳。"""
+    q = (query or "").strip()
+    if q.isdigit():
+        return q
+
+    if not _STOCK_INFO_CACHE:
+        import requests
+        try:
+            resp = requests.get(
+                "https://api.finmindtrade.com/api/v4/data",
+                params={"dataset": "TaiwanStockInfo"},
+                timeout=10, verify=False,
+            )
+            data = resp.json()
+            if data.get("status") == 200:
+                for row in data["data"]:
+                    name = (row.get("stock_name") or "").strip()
+                    sid = (row.get("stock_id") or "").strip()
+                    if name and sid and name not in _STOCK_INFO_CACHE:
+                        _STOCK_INFO_CACHE[name] = sid
+        except Exception:
+            pass
+
+    if q in _STOCK_INFO_CACHE:
+        return _STOCK_INFO_CACHE[q]
+    for name, sid in _STOCK_INFO_CACHE.items():
+        if q and q in name:
+            return sid
+    return q
+
+
+def get_stock_snapshot(stock: str) -> dict:
+    """組出一檔股票的完整數據快照，餵給 AI 當判讀依據。"""
+    from utils.stock_data import (
+        get_stock_price, get_institutional, compute_technical_score,
+        get_chip_score, get_stock_info,
+    )
+
+    stock_id = _resolve_stock_id(stock)
+    df = get_stock_price(stock_id, days=120)
+    if df.empty or "close" not in df.columns:
+        return {"stock_id": stock_id, "error": "查不到這檔股票的行情資料，請確認代號是否正確或是否已停牌"}
+
+    close = df["close"].astype(float)
+    latest = float(close.iloc[-1])
+    prev = float(close.iloc[-2]) if len(close) > 1 else latest
+    tech = compute_technical_score(df)
+    inst = get_institutional(stock_id, days=30)
+    chip = get_chip_score(inst)
+
+    recent = df.tail(30)
+    kbars = [
+        {
+            "date": str(r["date"])[:10],
+            "open": float(r.get("open", 0)),
+            "high": float(r.get("max", r.get("high", 0))),
+            "low": float(r.get("min", r.get("low", 0))),
+            "close": float(r.get("close", 0)),
+            "volume": int(r.get("Trading_Volume", 0) or 0),
+        }
+        for _, r in recent.iterrows()
+    ]
+
+    def _ma(n):
+        return round(float(close.rolling(n).mean().iloc[-1]), 2) if len(close) >= n else None
+
+    return {
+        "stock_id": stock_id,
+        "stock_name": get_stock_info(stock_id).get("name", stock_id),
+        "latest_close": round(latest, 2),
+        "change_pct": round((latest - prev) / prev * 100, 2) if prev else 0,
+        "ma5": _ma(5), "ma20": _ma(20), "ma60": _ma(60),
+        "rsi": tech.get("rsi"),
+        "technical_score": tech.get("score"),
+        "technical_details": tech.get("details"),
+        "chip_score": chip.get("score"),
+        "chip_details": chip.get("details"),
+        "kbars_30d": kbars,
+        "data_range": f"{str(df['date'].iloc[0])[:10]} ~ {str(df['date'].iloc[-1])[:10]}",
+    }
+
+
+def _text_of(msg) -> str:
+    return "\n".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
+
+
+def _run_with_tools(messages: list, max_rounds: int = 6) -> str:
+    """帶工具的對話迴圈：個股數據用本地工具查，新聞面用 web_search。"""
+    client = _make_client()
+    web_enabled = True
+    msg = None
+
+    for _ in range(max_rounds):
+        tools = [SNAPSHOT_TOOL] + ([WEB_SEARCH_TOOL] if web_enabled else [])
+        try:
+            msg = client.messages.create(
+                model=CHAT_MODEL,
+                max_tokens=2500,
+                system=CHAT_SYSTEM,
+                messages=messages,
+                tools=tools,
+            )
+        except Exception as e:
+            # 帳號沒開 web search 就降級成只用本地行情工具，不要整個對話掛掉
+            if web_enabled and "web_search" in str(e):
+                web_enabled = False
+                continue
+            raise
+
+        if msg.stop_reason != "tool_use":
+            return _text_of(msg)
+
+        messages.append({"role": "assistant", "content": msg.content})
+        results = []
+        for block in msg.content:
+            if getattr(block, "type", "") == "tool_use" and block.name == "get_stock_snapshot":
+                try:
+                    payload = get_stock_snapshot(block.input.get("stock", ""))
+                except Exception as e:
+                    payload = {"error": f"查詢失敗：{e}"}
+                results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json.dumps(payload, ensure_ascii=False, default=str),
+                })
+
+        if not results:
+            return _text_of(msg)
+        messages.append({"role": "user", "content": results})
+
+    return _text_of(msg) if msg else "⚠️ 分析回合過多，請把問題再問得具體一點。"
 
 
 def chat_with_radar(
@@ -156,36 +325,17 @@ def chat_with_radar(
         })
         # 加入歷史對話（最多10輪）
         messages.extend(chat_history[-20:])
+        # 加入當前問題
+        messages.append({"role": "user", "content": user_message})
     else:
         # 首次對話
         messages.append({
             "role": "user",
             "content": f"[我的當前狀況]\n{full_context}\n\n以上是我的即時資料。{user_message}"
         })
-        try:
-            client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-            msg = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1500,
-                system=CHAT_SYSTEM,
-                messages=messages
-            )
-            return msg.content[0].text
-        except Exception as e:
-            return _handle_api_error(e)
-
-    # 加入當前問題
-    messages.append({"role": "user", "content": user_message})
 
     try:
-        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
-        msg = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1500,
-            system=CHAT_SYSTEM,
-            messages=messages
-        )
-        return msg.content[0].text
+        return _run_with_tools(messages)
     except Exception as e:
         return _handle_api_error(e)
 

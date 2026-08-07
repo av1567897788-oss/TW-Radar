@@ -1,0 +1,21 @@
+name: Keep Streamlit App Awake
+
+# Streamlit Community Cloud 會讓長時間無流量的 app 進入睡眠，
+# 睡醒要重裝依賴，使用者打開時會卡好幾分鐘（看起來像崩潰）。
+# 這個排程每 4 小時打一次 app URL，維持流量避免睡著。
+
+on:
+  schedule:
+    - cron: '17 */4 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping app
+        run: |
+          code=$(curl -sSL --max-time 90 -o /dev/null -w '%{http_code}' \
+            https://tw-radar-hglncrxcx5kowqpjfaxlrb.streamlit.app)
+          echo "HTTP $code"
+          [ "$code" = "200" ] || echo "::warning::app 回應 $code，可能正在喚醒或已停止"
