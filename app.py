@@ -93,7 +93,10 @@ if not check_password():
     st.stop()
 
 # ── 依登入用戶切換 DB ────────────────────────────────────
-_active_user = st.session_state.get("active_user", "default")
+# tw-radar 與 tw-radar-yy 是同一份程式碼的兩個部署，各自服務一個人。
+# 用 Secrets 的 APP_USER 把該站台綁定到資料擁有者，雲端資料才不會互相蓋掉；
+# 沒設定時退回密碼判定（同一站雙密碼的舊行為）。
+_active_user = st.secrets.get("APP_USER", "") or st.session_state.get("active_user", "default")
 set_user(_active_user)
 init_db()
 
