@@ -182,9 +182,8 @@ if _fm_status.get("rate_limited"):
         "<div style='background:#2A2410; border:1px solid #FFD700; border-radius:8px; "
         "padding:8px 14px; margin-bottom:8px; font-size:0.85rem;'>"
         "<b style='color:#FFD700;'>⚠️ FinMind 額度已用盡</b> "
-        "<span style='color:#888;'>技術面與籌碼面已自動改用 TWSE 官方資料，"
-        "基本面（月營收／財報）這段時間會暫缺。"
-        "在 Streamlit Secrets 加入 <code>FINMIND_TOKEN</code> 即可解除。</span></div>",
+        "<span style='color:#888;'>技術面、籌碼面、基本面已全部改用 TWSE 官方資料，"
+        "評分照常運作。</span></div>",
         unsafe_allow_html=True
     )
 

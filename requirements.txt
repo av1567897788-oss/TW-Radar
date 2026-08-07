@@ -5,3 +5,4 @@ requests==2.34.2
 anthropic==0.105.2
 httpx==0.28.1
 streamlit-autorefresh==1.0.1
+google-auth==2.56.3

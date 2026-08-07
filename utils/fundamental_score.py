@@ -1,114 +1,198 @@
 """
 基本面評分（/20）
-來源：FinMind 財務報表 + 月營收
-計算：EPS成長、毛利率、營收YoY
+來源：TWSE OpenAPI（官方、免 token、不限次），FinMind 只當備援。
+
+改用 TWSE 的原因：FinMind 匿名額度極低，一輪選股就把額度打爆，
+基本面分數會整批變成 0，畫面顯示「資料不足」。TWSE OpenAPI 沒有這個問題。
+
+計算：月營收年增率 /8、毛利率 /6、稅後淨利率 /6
 """
 
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
 import urllib3
+
+from utils.stock_data import _cache_read, _cache_write
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+TWSE_OPENAPI = "https://openapi.twse.com.tw/v1/opendata"
+
+# 綜合損益表依產業別拆成五張表，全部合併才能涵蓋所有上市公司
+INCOME_DATASETS = [
+    "t187ap06_L_ci",    # 一般業
+    "t187ap06_L_fh",    # 金控業
+    "t187ap06_L_ins",   # 保險業
+    "t187ap06_L_bd",    # 證券期貨業
+    "t187ap06_L_mim",   # 異業
+]
 
 FINMIND_API = "https://api.finmindtrade.com/api/v4/data"
 
 
-def _fm(dataset, stock_id, start_date):
+def _twse_open(dataset: str, ttl: int = 43200) -> pd.DataFrame:
+    """抓 TWSE OpenAPI 並落地快取（半天）。全市場一次抓完，逐檔查表不再打網路。"""
+    key = f"TWSE_OPENAPI|{dataset}"
+    cached, is_stale = _cache_read(key, max_age=ttl)
+    if cached is not None and not is_stale:
+        return cached
     try:
-        r = requests.get(FINMIND_API,
-            params={"dataset": dataset, "data_id": stock_id, "start_date": start_date},
-            timeout=10, verify=False)
-        d = r.json()
-        if d.get("status") == 200 and d.get("data"):
-            return pd.DataFrame(d["data"])
+        r = requests.get(f"{TWSE_OPENAPI}/{dataset}",
+                         headers={"accept": "application/json", "User-Agent": "Mozilla/5.0"},
+                         timeout=20, verify=False)
+        data = r.json()
+        if isinstance(data, list) and data:
+            df = pd.DataFrame(data)
+            _cache_write(key, df)
+            return df
     except Exception:
         pass
-    return pd.DataFrame()
+    return cached if cached is not None else pd.DataFrame()
+
+
+def _num(v) -> float:
+    try:
+        return float(str(v).replace(",", "").strip())
+    except Exception:
+        return 0.0
+
+
+def get_monthly_revenue(stock_id: str) -> dict:
+    """月營收：TWSE 已直接提供年增率與累計年增率，不必自己算。"""
+    df = _twse_open("t187ap05_L")
+    if df.empty or "公司代號" not in df.columns:
+        return {}
+    hit = df[df["公司代號"].astype(str).str.strip() == stock_id]
+    if hit.empty:
+        return {}
+    r = hit.iloc[0]
+    return {
+        "month": str(r.get("資料年月", "")),
+        "revenue": _num(r.get("營業收入-當月營收")),
+        "yoy": _num(r.get("營業收入-去年同月增減(%)")),
+        "mom": _num(r.get("營業收入-上月比較增減(%)")),
+        "cum_yoy": _num(r.get("累計營業收入-前期比較增減(%)")),
+        "note": str(r.get("備註", "")).strip(),
+    }
+
+
+def get_income_statement(stock_id: str) -> dict:
+    """最新一季綜合損益表（五張產業表合併查）。"""
+    for ds in INCOME_DATASETS:
+        df = _twse_open(ds)
+        if df.empty or "公司代號" not in df.columns:
+            continue
+        hit = df[df["公司代號"].astype(str).str.strip() == stock_id]
+        if hit.empty:
+            continue
+        r = hit.iloc[0]
+        rev = _num(r.get("營業收入"))
+        cost = _num(r.get("營業成本"))
+        gross = _num(r.get("營業毛利（毛損）淨額")) or _num(r.get("營業毛利（毛損）"))
+        if not gross and rev:
+            gross = rev - cost
+        net = _num(r.get("淨利（淨損）歸屬於母公司業主")) or _num(r.get("本期淨利（淨損）"))
+        return {
+            "year": str(r.get("年度", "")), "quarter": str(r.get("季別", "")),
+            "revenue": rev,
+            "gross_margin": (gross / rev * 100) if rev else None,
+            "net_margin": (net / rev * 100) if rev else None,
+            "eps": _num(r.get("基本每股盈餘（元）")),
+        }
+    return {}
+
+
+def _finmind_revenue_fallback(stock_id: str) -> float:
+    """TWSE 查不到（例如興櫃／剛上市）時才走 FinMind，回傳近三月 YoY%。"""
+    try:
+        start = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
+        r = requests.get(FINMIND_API, params={
+            "dataset": "TaiwanStockMonthRevenue", "data_id": stock_id, "start_date": start,
+        }, timeout=10, verify=False)
+        d = r.json()
+        if d.get("status") != 200 or not d.get("data"):
+            return None
+        df = pd.DataFrame(d["data"]).sort_values("date")
+        if len(df) < 15:
+            return None
+        rev = df["revenue"].astype(float)
+        recent3, yoy3 = rev.tail(3).mean(), rev.iloc[-15:-12].mean()
+        return (recent3 - yoy3) / yoy3 * 100 if yoy3 > 0 else None
+    except Exception:
+        return None
 
 
 def get_fundamental_score(stock_id: str) -> dict:
     """
     基本面評分（/20）
-    - 毛利率趨勢         /6
-    - 月營收年增率        /8
-    - 稅後淨利趨勢        /6
+    - 月營收年增率  /8
+    - 毛利率        /6
+    - 稅後淨利率    /6
     """
     score = 0
     details = {}
-    start_2y = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
-    start_6m = (datetime.today() - timedelta(days=180)).strftime("%Y-%m-%d")
 
     # ── 月營收年增率 ────────────────────────────────────
-    rev_df = _fm("TaiwanStockMonthRevenue", stock_id, start_2y)
-    if not rev_df.empty and "revenue" in rev_df.columns:
-        rev_df["revenue"] = rev_df["revenue"].astype(float)
-        rev_df = rev_df.sort_values("date")
+    rev = get_monthly_revenue(stock_id)
+    yoy = rev.get("yoy") if rev else None
+    if yoy is None:
+        yoy = _finmind_revenue_fallback(stock_id)
 
-        # 近3個月營收 vs 去年同期
-        if len(rev_df) >= 15:
-            recent3 = rev_df["revenue"].tail(3).mean()
-            yoy3    = rev_df["revenue"].iloc[-15:-12].mean()
-            yoy_pct = (recent3 - yoy3) / yoy3 * 100 if yoy3 > 0 else 0
-
-            if yoy_pct >= 20:
-                score += 8
-                details[f"月營收YoY +{yoy_pct:.1f}%"] = "✅ +8（高成長）"
-            elif yoy_pct >= 5:
-                score += 5
-                details[f"月營收YoY +{yoy_pct:.1f}%"] = "🟡 +5（穩定成長）"
-            elif yoy_pct >= -5:
-                score += 2
-                details[f"月營收YoY {yoy_pct:+.1f}%"] = "⚪ +2（持平）"
-            else:
-                details[f"月營收YoY {yoy_pct:+.1f}%"] = "❌ 0（衰退）"
+    if yoy is not None:
+        label = f"月營收YoY {yoy:+.1f}%"
+        if rev.get("month"):
+            label = f"{rev['month']} 月營收YoY {yoy:+.1f}%"
+        if yoy >= 20:
+            score += 8
+            details[label] = "✅ +8（高成長）"
+        elif yoy >= 5:
+            score += 5
+            details[label] = "🟡 +5（穩定成長）"
+        elif yoy >= -5:
+            score += 2
+            details[label] = "⚪ +2（持平）"
         else:
-            details["月營收"] = "⚪ 資料不足"
+            details[label] = "❌ 0（衰退）"
     else:
-        details["月營收"] = "⚪ 無資料"
+        details["月營收"] = "⚪ 尚未公布"
 
-    # ── 財務報表：毛利率 + 淨利 ──────────────────────────
-    fs_df = _fm("TaiwanStockFinancialStatements", stock_id, start_2y)
-    if not fs_df.empty and "type" in fs_df.columns:
-        # 毛利率
-        cogs = fs_df[fs_df["type"] == "CostOfGoodsSold"]["value"].astype(float)
-        op_inc = fs_df[fs_df["type"] == "OperatingIncome"]["value"].astype(float)
-        rev_fs = fs_df[fs_df["type"] == "Revenue"]["value"].astype(float) \
-                 if "Revenue" in fs_df["type"].values else pd.Series(dtype=float)
-
-        if not rev_fs.empty and not cogs.empty:
-            gross = (rev_fs.values[-1] - cogs.values[-1]) / rev_fs.values[-1] * 100 \
-                    if rev_fs.values[-1] > 0 else 0
-            if gross >= 50:
-                score += 6
-                details[f"毛利率 {gross:.1f}%"] = "✅ +6（高毛利）"
-            elif gross >= 30:
-                score += 4
-                details[f"毛利率 {gross:.1f}%"] = "🟡 +4（中毛利）"
-            elif gross >= 15:
-                score += 2
-                details[f"毛利率 {gross:.1f}%"] = "⚪ +2（低毛利）"
-            else:
-                details[f"毛利率 {gross:.1f}%"] = "❌ 0（毛利偏低）"
+    # ── 毛利率 / 淨利率 ─────────────────────────────────
+    inc = get_income_statement(stock_id)
+    gm = inc.get("gross_margin") if inc else None
+    if gm is not None:
+        tag = f"{inc['year']}Q{inc['quarter']} 毛利率 {gm:.1f}%"
+        if gm >= 50:
+            score += 6
+            details[tag] = "✅ +6（高毛利）"
+        elif gm >= 30:
+            score += 4
+            details[tag] = "🟡 +4（中毛利）"
+        elif gm >= 15:
+            score += 2
+            details[tag] = "⚪ +2（低毛利）"
         else:
-            details["毛利率"] = "⚪ 無法計算"
-
-        # 淨利趨勢（最近兩季對比）
-        net = fs_df[fs_df["type"] == "IncomeAfterTaxes"].sort_values("date")
-        if len(net) >= 2:
-            latest_net = float(net["value"].iloc[-1])
-            prev_net   = float(net["value"].iloc[-2])
-            net_chg    = (latest_net - prev_net) / abs(prev_net) * 100 if prev_net != 0 else 0
-            if net_chg >= 10:
-                score += 6
-                details[f"淨利季增 +{net_chg:.1f}%"] = "✅ +6"
-            elif net_chg >= 0:
-                score += 3
-                details[f"淨利季增 +{net_chg:.1f}%"] = "🟡 +3（穩定）"
-            else:
-                details[f"淨利季減 {net_chg:.1f}%"] = "❌ 0"
-        else:
-            details["淨利趨勢"] = "⚪ 資料不足"
+            details[tag] = "❌ 0（毛利偏低）"
     else:
-        details["財務報表"] = "⚪ 無資料"
+        details["毛利率"] = "⚪ 本季財報尚未公布"
+
+    nm = inc.get("net_margin") if inc else None
+    if nm is not None:
+        tag = f"稅後淨利率 {nm:.1f}%"
+        if inc.get("eps"):
+            tag += f"（EPS {inc['eps']:.2f}）"
+        if nm >= 15:
+            score += 6
+            details[tag] = "✅ +6"
+        elif nm >= 5:
+            score += 3
+            details[tag] = "🟡 +3"
+        elif nm > 0:
+            score += 1
+            details[tag] = "⚪ +1（微利）"
+        else:
+            details[tag] = "❌ 0（虧損）"
+    else:
+        details["淨利率"] = "⚪ 本季財報尚未公布"
 
     return {"score": min(score, 20), "details": details}
