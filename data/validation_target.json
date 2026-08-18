@@ -3,11 +3,11 @@
   "round1_period": "2026-06-02 to 2026-06-17",
   "round2_valid_days_as_of_2026-08-06": 19,
   "round2_start": "2026-07-05",
-  "total_valid_trading_days_as_of_2026-08-17": 40,
+  "total_valid_trading_days_as_of_2026-08-18": 41,
   "required_valid_trading_days": 60,
-  "remaining_trading_days_needed": 20,
+  "remaining_trading_days_needed": 19,
   "estimated_completion_date": "2026-09-14",
   "note": "estimate is weekday count only, does not subtract TW market holidays, so actual date will land a few days later. Only days where the GitHub Actions run completes with status=success count toward this total.",
   "rule": "Do not commit real money to this strategy before required_valid_trading_days is reached. Check data/last_run_status.json daily; any 'failed' day does not count toward the total.",
-  "last_updated": "2026-08-17"
+  "last_updated": "2026-08-18"
 }
