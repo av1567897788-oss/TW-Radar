@@ -1209,6 +1209,7 @@ rec_col, warn_col = st.columns(2)
 # ── 推薦股 ──────────────────────────────────────────────
 with rec_col:
     st.markdown("## 📈 推薦股清單")
+    st.warning("⚠️ 實測提醒：2026-07～09 驗證顯示，評分愈高的股票，5 日後報酬反而愈差（Rank IC ≈ -0.12）。此清單僅供參考，不是買進保證。", icon="⚠️")
     st.markdown("""
     <div style='font-size:0.75rem; margin-bottom:8px; line-height:1.8;'>
         📊 <b>排序邏輯</b>：從監控清單掃描所有股票，依五層總分由高到低排列，顯示前15名。<br/>
