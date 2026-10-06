@@ -14,6 +14,10 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta
 
+# 台股交易成本：手續費 0.1425%（買賣各一次）、證交稅 0.3%（僅賣出）
+FEE_RATE = 0.001425
+TAX_RATE = 0.003
+
 DB_PATH = Path(__file__).parent.parent / "data" / "simulation.db"
 
 # ══════════════════════════════════════════════════════
@@ -169,6 +173,14 @@ def init_sim_db():
                 created_at TEXT DEFAULT (datetime('now','localtime'))
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sim_layer_scores (
+                predict_date TEXT, stock_id TEXT, total INTEGER,
+                tech REAL, chip REAL, fund REAL, sect REAL, proph REAL,
+                price REAL, price_5d_later REAL,
+                PRIMARY KEY (predict_date, stock_id)
+            )
+        """)
         # 初始化資金
         for inv_id, inv in INVESTORS.items():
             conn.execute("""
@@ -197,6 +209,7 @@ def get_sim_holdings(investor_id: str) -> pd.DataFrame:
 def sim_buy(investor_id: str, stock_id: str, stock_name: str,
             buy_price: float, shares: float, score: int, reason: str, date: str):
     cost = buy_price * shares
+    buy_fee = cost * FEE_RATE
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "INSERT INTO sim_holdings (investor_id, stock_id, stock_name, buy_price, shares, buy_date, score_at_buy) "
@@ -205,7 +218,7 @@ def sim_buy(investor_id: str, stock_id: str, stock_name: str,
         )
         conn.execute(
             "UPDATE sim_capital SET cash=cash-?, total_invested=total_invested+?, updated_at=datetime('now','localtime') "
-            "WHERE investor_id=?", (cost, cost, investor_id)
+            "WHERE investor_id=?", (cost + buy_fee, cost, investor_id)
         )
         conn.execute(
             "INSERT INTO sim_trades (investor_id, stock_id, stock_name, action, price, shares, score_at_action, reason, trade_date) "
@@ -216,9 +229,10 @@ def sim_buy(investor_id: str, stock_id: str, stock_name: str,
 
 def sim_sell(investor_id: str, holding_id: int, stock_id: str, stock_name: str,
              sell_price: float, shares: float, buy_price: float, score: int, reason: str, date: str):
-    proceeds = sell_price * shares
+    gross = sell_price * shares
     cost = buy_price * shares
-    pnl = proceeds - cost
+    proceeds = gross * (1 - FEE_RATE - TAX_RATE)  # 扣賣出手續費與證交稅
+    pnl = proceeds - cost - cost * FEE_RATE        # 再扣當初買進手續費
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM sim_holdings WHERE id=?", (holding_id,))
         conn.execute(
@@ -273,6 +287,17 @@ def record_prediction(stock_id: str, name: str, date: str, signal: str, score: i
         )
 
 
+def record_layer_scores(date: str, stock_id: str, d: dict):
+    """每日存五層分數，供逐層計算 IC"""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO sim_layer_scores "
+            "(predict_date, stock_id, total, tech, chip, fund, sect, proph, price) VALUES (?,?,?,?,?,?,?,?,?)",
+            (date, stock_id, d.get("total"), d.get("tech"), d.get("chip"), d.get("fund"),
+             d.get("sect"), d.get("proph"), d.get("price"))
+        )
+
+
 def verify_predictions():
     """驗證5天前的預測是否正確（真實收盤價）"""
     from utils.stock_data import get_stock_price
@@ -281,8 +306,8 @@ def verify_predictions():
     with sqlite3.connect(DB_PATH) as conn:
         pending = conn.execute(
             "SELECT id, stock_id, price_at_signal, signal FROM sim_predictions "
-            "WHERE predict_date=? AND result IS NULL",
-            (verify_date,)
+            "WHERE predict_date<=? AND predict_date>=? AND result IS NULL",
+            (verify_date, (datetime.today() - timedelta(days=9)).strftime("%Y-%m-%d"))
         ).fetchall()
 
         for row in pending:
@@ -304,6 +329,11 @@ def verify_predictions():
                 "UPDATE sim_predictions SET price_5d_later=?, result=? WHERE id=?",
                 (current, result, pid)
             )
+            conn.execute(
+                "UPDATE sim_layer_scores SET price_5d_later=? WHERE stock_id=? AND predict_date="
+                "(SELECT predict_date FROM sim_predictions WHERE id=?)",
+                (current, sid, pid)
+            )
 
 
 def get_accuracy_stats() -> dict:
@@ -316,6 +346,9 @@ def get_accuracy_stats() -> dict:
     if df.empty:
         return {"total": 0, "correct": 0, "accuracy": 0}
 
+    df = df[df["result"] != "中性"]  # 中性不是預測，不計入分母
+    if df.empty:
+        return {"total": 0, "correct": 0, "accuracy": 0}
     total = len(df)
     correct = len(df[df["result"] == "正確"])
     return {
@@ -324,3 +357,42 @@ def get_accuracy_stats() -> dict:
         "accuracy": round(correct / total * 100, 1) if total > 0 else 0,
         "by_signal": {f"{k[0]}_{k[1]}": v for k, v in df.groupby(["signal", "result"]).size().to_dict().items()}
     }
+
+
+def get_ic_stats() -> dict:
+    """主指標：每日截面 Rank IC（分數 vs 5 日報酬）與分組報酬。IC>0.03 才算有一點預測力。"""
+    with sqlite3.connect(DB_PATH) as conn:
+        df = pd.read_sql(
+            "SELECT predict_date, score, price_at_signal, price_5d_later FROM sim_predictions "
+            "WHERE price_5d_later IS NOT NULL AND price_at_signal > 0", conn)
+        lay = pd.read_sql(
+            "SELECT * FROM sim_layer_scores WHERE price_5d_later IS NOT NULL AND price > 0", conn)
+    out = {"days": 0, "ic": None, "icir": None, "baseline": None, "top_quintile": None,
+           "bottom_quintile": None, "layers": {}}
+    if df.empty:
+        return out
+    df["ret"] = (df.price_5d_later / df.price_at_signal - 1) * 100
+
+    def daily_ic(frame, col):
+        ics = []
+        for _, g in frame.groupby(frame.columns[0]):
+            if len(g) >= 20 and g[col].nunique() > 1:
+                ics.append(g[col].rank().corr(g["ret"].rank()))
+        return pd.Series(ics).dropna()
+
+    ic = daily_ic(df, "score")
+    out["days"] = int(len(ic))
+    if len(ic):
+        out["ic"] = round(float(ic.mean()), 3)
+        out["icir"] = round(float(ic.mean() / ic.std()), 2) if len(ic) > 1 and ic.std() > 0 else None
+    out["baseline"] = round(float(df.ret.mean()), 2)
+    q = pd.qcut(df.score.rank(method="first"), 5, labels=False)
+    out["top_quintile"] = round(float(df.ret[q == 4].mean()), 2)
+    out["bottom_quintile"] = round(float(df.ret[q == 0].mean()), 2)
+    if not lay.empty:
+        lay["ret"] = (lay.price_5d_later / lay.price - 1) * 100
+        for col in ["tech", "chip", "fund", "sect", "proph", "total"]:
+            s = daily_ic(lay[["predict_date", col, "ret"]], col)
+            if len(s):
+                out["layers"][col] = {"ic": round(float(s.mean()), 3), "days": int(len(s))}
+    return out

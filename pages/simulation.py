@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from utils.virtual_investors import (
     INVESTORS, init_sim_db, get_sim_capital, get_sim_holdings,
-    get_all_trades, get_daily_reports, get_accuracy_stats
+    get_all_trades, get_daily_reports, get_accuracy_stats, get_ic_stats
 )
 
 st.set_page_config(page_title="模擬驗證 | TW-Radar", page_icon="📊", layout="wide")
@@ -100,7 +100,21 @@ with ac2:
 with ac3:
     rate = acc["accuracy"]
     color = "normal" if rate >= 60 else "inverse"
-    st.metric("整體準確率", f"{rate}%", delta=f"目標 ≥ 60%")
+    st.metric("買進訊號命中率（不含中性）", f"{rate}%", delta="基準：隨機約 42%", delta_color="off")
+
+ic = get_ic_stats()
+st.markdown("### 📐 主指標：Rank IC（分數與 5 日後報酬的相關）")
+st.caption("業界標準。>0.03 才算有一點預測力，0 是亂猜，負數代表方向反了。Microsoft Qlib 最佳模型約 0.05。")
+i1, i2, i3, i4 = st.columns(4)
+i1.metric("Rank IC", ic["ic"] if ic["ic"] is not None else "—", delta=f"{ic['days']} 個交易日", delta_color="off")
+i2.metric("ICIR（穩定度）", ic["icir"] if ic["icir"] is not None else "—")
+i3.metric("最高分組 5日報酬%", ic["top_quintile"] if ic["top_quintile"] is not None else "—")
+i4.metric("最低分組 5日報酬%", ic["bottom_quintile"] if ic["bottom_quintile"] is not None else "—", delta=f"全體 {ic['baseline']}%", delta_color="off")
+if ic["layers"]:
+    st.caption("逐層 IC：" + "｜".join(f"{k} {v['ic']}（{v['days']}日）" for k, v in ic["layers"].items()))
+else:
+    st.caption("逐層 IC 資料累積中（2026-10-06 起每日存各層分數）。")
+st.caption("報酬已扣手續費 0.1425% 與證交稅 0.3%（2026-10-06 起生效，先前紀錄未扣）。")
 
 st.divider()
 

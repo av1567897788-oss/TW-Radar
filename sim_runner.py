@@ -20,7 +20,8 @@ from datetime import datetime
 from utils.virtual_investors import (
     INVESTORS, get_scan_list, init_sim_db,
     get_sim_capital, get_sim_holdings, sim_buy, sim_sell,
-    save_daily_report, record_prediction, verify_predictions, get_accuracy_stats
+    save_daily_report, record_prediction, verify_predictions, get_accuracy_stats,
+    record_layer_scores, get_ic_stats
 )
 from utils.stock_data import get_stock_price, compute_technical_score, get_institutional, get_chip_score
 from utils.fundamental_score import get_fundamental_score
@@ -92,6 +93,7 @@ def run_daily_simulation():
                      "可考慮買進" if data["total"] >= 60 else \
                      "觀察等待" if data["total"] >= 45 else "不建議"
             record_prediction(sid, data["name"], date_str, signal, data["total"], data["price"])
+            record_layer_scores(date_str, sid, data)
 
     # 三個投資客各自操作
     all_reports = {}
@@ -113,6 +115,8 @@ def run_daily_simulation():
 
     # 準確率統計
     acc = get_accuracy_stats()
+    ic = get_ic_stats()
+    log(f"Rank IC={ic['ic']}（{ic['days']}日）｜最高分組 {ic['top_quintile']}% vs 最低分組 {ic['bottom_quintile']}% vs 全體 {ic['baseline']}%｜分層 {ic['layers']}")
     log(f"\n系統預測準確率: {acc['accuracy']}% ({acc['correct']}/{acc['total']}筆)")
 
     # 存摘要
@@ -126,6 +130,21 @@ def run_daily_simulation():
 
     log(f"=== 完成，報告存至 {summary_path} ===")
     return all_reports
+
+
+def _price_of(sid: str, scores: dict):
+    """取現價：優先掃描結果，其次補抓；都失敗回 None（絕不退回買價）"""
+    p = scores.get(sid, {}).get("price", 0)
+    if p and p > 0:
+        return float(p)
+    try:
+        from utils.stock_data import get_stock_price
+        df = get_stock_price(sid, days=5)
+        if not df.empty:
+            return float(df["close"].iloc[-1])
+    except Exception as e:
+        log(f"  ⚠️ 補抓 {sid} 現價失敗: {e}")
+    return None
 
 
 def run_investor_day(inv: dict, scores: dict, date_str: str) -> dict:
@@ -142,9 +161,10 @@ def run_investor_day(inv: dict, scores: dict, date_str: str) -> dict:
             buy_p = float(h["buy_price"])
             shares = float(h["shares"])
             buy_date = h["buy_date"]
-            current_p = scores.get(sid, {}).get("price", buy_p)
+            current_p = _price_of(sid, scores)
 
-            if current_p <= 0:
+            if current_p is None or current_p <= 0:
+                log(f"  ⚠️ {sid} 無現價，今日不判斷停損停利（不以買價代替）")
                 continue
 
             pnl_pct = (current_p - buy_p) / buy_p
